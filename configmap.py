@@ -1,9 +1,11 @@
 import os
 import runcmd
+import json
 import ast 
 from log import logger
 
 PIPELINE_CM = os.environ.get("PIPELINE_CM")
+MACHINE_STATUS_CM = os.environ.get("MACHINE_CM")
 FINISH_RUN_KEY = "wait_finish_runs"
 FINISH_TASK_KEY = "wait_finish_task"
 
@@ -50,6 +52,20 @@ def append_wait_task(new_elelment):
     origi_list = get_wait_finish_task()
     origi_list.append(new_elelment)
     update_wait_finish_task(origi_list)
+
+def get_all_machine_statuses():
+    cmd = f"oc get cm {MACHINE_STATUS_CM} -o json"
+    code, out, _ = runcmd.run_cmd(cmd)
+    if code == 0 and out.strip() != "null":
+        try:
+            cm_data = json.loads(out)
+            return cm_data.get('data', {})
+        except json.JSONDecodeError:
+            logger.error(f"Failed to parse JSON from configmap {MACHINE_STATUS_CM}")
+            return {}
+    else:
+        logger.error(f"Failed to get configmap {MACHINE_STATUS_CM}")
+        return {}
 
 def update_wait_finish_task(wait_finish_list):
     if not write_cm(PIPELINE_CM, FINISH_TASK_KEY, wait_finish_list):

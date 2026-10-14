@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Machine Status</title>
+    <meta http-equiv="refresh" content="30">
+</head>
+
+<body>
+    <h1>Machine Status</h1>
+    <table border="1">
+        <tr>
+            <th>Machine</th>
+            <th>Status</th>
+        </tr>
+        {% for machine, status in statuses.items() %}
+        <tr>
+            <td>{{ machine }}</td>
+            <td>{{ status }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+
+    <h2>Running Pipelines</h2>
+    <table border="1">
+        <tr>
+            <th>Pipeline Run</th>
+            <th>Machine</th>
+        </tr>
+        {% for run, machine in wait_finish_runs %}
+        <tr>
+            <td>{{ run }}</td>
+            <td>{{ machine }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+
+    <h2>Execution Log</h2>
+    <textarea id="log" rows="20" cols="150" readonly style="white-space: pre-wrap;">{{ log_contents }}</textarea>
+
+    <script>
+        var log = document.getElementById('log');
+        log.scrollTop = log.scrollHeight;
+
+        setInterval(function () {
+            fetch('/log')
+                .then(response => response.json())
+                .then(data => {
+                    log.value = data.log;
+                    log.scrollTop = log.scrollHeight;
+                });
+        }, 5000);
+    </script>
+</body>
+
+</html>

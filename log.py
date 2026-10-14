@@ -9,12 +9,14 @@ file_formatter = logging.Formatter(
     "%(asctime)s - %(levelname)s - %(message)s"
 )
 
-logfolder="/var/log/app/"
-os.makedirs(logfolder, exist_ok=True)
+LOG_FOLDER = "/var/log/app/"
+INFO_LOG_FILE = os.path.join(LOG_FOLDER, "info.log")
+
+os.makedirs(LOG_FOLDER, exist_ok=True)
 
 # ================= INFO：keep 7 days =================
 info_handler = TimedRotatingFileHandler(
-    filename=logfolder+"info.log",
+    filename=INFO_LOG_FILE,
     when="D",
     interval=1,
     backupCount=7,        
@@ -26,14 +28,14 @@ info_handler.setFormatter(file_formatter)
 
 # ================= WARNING：always keep =================
 warning_handler = logging.FileHandler(
-    logfolder+"warning.log", encoding="utf-8"
+    os.path.join(LOG_FOLDER, "warning.log"), encoding="utf-8"
 )
 warning_handler.setLevel(logging.WARNING)
 warning_handler.addFilter(lambda r: r.levelno == logging.WARNING)
 warning_handler.setFormatter(file_formatter)
 # ================= ERROR：always keep =================
 error_handler = logging.FileHandler(
-    logfolder+"error.log", encoding="utf-8"
+    os.path.join(LOG_FOLDER, "error.log"), encoding="utf-8"
 )
 error_handler.setLevel(logging.ERROR)
 error_handler.setFormatter(file_formatter)

@@ -12,10 +12,13 @@ RUN microdnf install -y openssh-clients sshpass zip bash jq python3 pip tar \
     && curl -kL ${TKN_URL} -o tkn.tar.gz \
     && tar xvzf tkn.tar.gz -C /usr/local/bin \
     && rm -f tkn.tar.gz \
-    && pip install --no-cache-dir paramiko \
+    && pip install --no-cache-dir paramiko flask \
     && microdnf clean all \
     && chmod 777 -R /opt/
 
-COPY control.py /opt/
+COPY *.py /opt/
+COPY templates/ /opt/templates/
+
+EXPOSE 8080
 
 ENTRYPOINT ["python3", "/opt/control.py"]

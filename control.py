@@ -207,6 +207,13 @@ def monitor_task():
     logger.info(new_wait_list)
 
 if __name__ == "__main__":
+    from web import app
+    import threading
+
+    web_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=8080))
+    web_thread.daemon = True
+    web_thread.start()
+
     set_project()
     
     while True:
