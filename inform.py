@@ -1,8 +1,13 @@
 import paramiko
 import json
 import io
+import os
+import machines
 
 def get_machine_secret(secret_name:str):
+    # machines added through the API have no mounted secret, read it from the cluster
+    if not os.path.isdir(f"/opt/{secret_name}"):
+        return machines.fetch_secret(secret_name)
     with open(f"/opt/{secret_name}/username") as f:
         username = f.read().strip()
     with open(f"/opt/{secret_name}/host") as f:
@@ -12,7 +17,12 @@ def get_machine_secret(secret_name:str):
 
 def set_inform_message(machine:str, piprlinerun: str):
     message = "current machine is occuied by pipelinerun {}\nPlease not modify anything affects testing".format(piprlinerun)
-    host, user, keypath = get_machine_secret(machine)
+    # a missing or unreadable secret must not stop the controller loop
+    try:
+        host, user, keypath = get_machine_secret(machine)
+    except Exception as e:
+        print(f"Error reading secret of {machine}, skip setting motd: {e}")
+        return
     if "windows" in machine:
         os = "windows"
     else:
@@ -20,7 +30,11 @@ def set_inform_message(machine:str, piprlinerun: str):
     set_remote_motd(host, user, keypath, message, os)
 
 def clean_inform_message(machine:str):
-    host, user, keypath = get_machine_secret(machine)
+    try:
+        host, user, keypath = get_machine_secret(machine)
+    except Exception as e:
+        print(f"Error reading secret of {machine}, skip clearing motd: {e}")
+        return
     if "windows" in machine:
         os = "windows"
     else:
@@ -85,9 +99,8 @@ def clear_remote_motd(host, user, keypath,os_type='linux'):
     else:
         MOTD_FILE_PATH = "/etc/motd"
 
-    private_key = paramiko.RSAKey.from_private_key_file(keypath)
-    
     try:
+        private_key = paramiko.RSAKey.from_private_key_file(keypath)
         ssh.connect(host, username=user, pkey=private_key)
     except Exception as e:
         print(f"Error clear motd for {host}: {e}")

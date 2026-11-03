@@ -31,6 +31,12 @@ def set_configmap_key(name: str, key: str, value: str):
         logger.error(f"failed to set {key} in configmap {name}: {err.strip()}")
     return code == 0
 
+def remove_configmap_key(name: str, key: str):
+    code, _, err = oc("set", "data", "configmap", name, f"{key}-")
+    if code != 0:
+        logger.error(f"failed to remove {key} from configmap {name}: {err.strip()}")
+    return code == 0
+
 # ---------------- tekton ----------------
 
 def get_pipelinerun(name: str):
@@ -68,3 +74,28 @@ def taskrun_succeeded(taskrun: dict):
         if condition.get("type") == "Succeeded":
             return condition.get("status")
     return None
+
+# ---------------- secrets ----------------
+
+def create_secret(name: str, string_data: dict, labels: dict):
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {"name": name, "labels": labels},
+        "type": "Opaque",
+        "stringData": string_data,
+    }
+    # via stdin so the private key never lands on disk or in argv
+    code, _, err = oc("create", "-f", "-", input=json.dumps(manifest))
+    if code != 0:
+        logger.error(f"failed to create secret {name}: {err.strip()}")
+    return code == 0, err.strip()
+
+def get_secret(name: str):
+    return get_json("secret", name)
+
+def delete_secret(name: str):
+    code, _, err = oc("delete", "secret", name)
+    if code != 0:
+        logger.error(f"failed to delete secret {name}: {err.strip()}")
+    return code == 0

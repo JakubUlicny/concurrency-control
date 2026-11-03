@@ -29,6 +29,9 @@ def write_cm(cm_name, key, value):
         logger.error(f"failed to change {key} status to {value}")
         return False
 
+def remove_cm_key(cm_name, key):
+    return cluster.remove_configmap_key(cm_name, key)
+
 def append_wait_finish_run(new_elelment):
     origi_list = get_wait_finish_runs()
     origi_list.append(new_elelment)
