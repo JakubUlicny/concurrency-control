@@ -1,11 +1,12 @@
 import paramiko
-import runcmd
 import json
 import io
 
 def get_machine_secret(secret_name:str):
-    _, username, _ = runcmd.run_cmd(f"cat /opt/{secret_name}/username")
-    _, host, _ = runcmd.run_cmd(f"cat /opt/{secret_name}/host")
+    with open(f"/opt/{secret_name}/username") as f:
+        username = f.read().strip()
+    with open(f"/opt/{secret_name}/host") as f:
+        host = f.read().strip()
     keypath = f"/opt/{secret_name}/id_rsa"
     return host, username, keypath
 
