@@ -45,6 +45,22 @@ def create_configmap(name: str):
 
 # ---------------- tekton ----------------
 
+def get_pipeline(name: str):
+    return get_json("pipeline", name)
+
+def apply(manifest: dict):
+    # creates the object or replaces the one with the same name
+    code, _, err = oc("apply", "-f", "-", input=json.dumps(manifest))
+    if code != 0:
+        logger.error(f"failed to apply {manifest['kind']} {manifest['metadata']['name']}: {err.strip()}")
+    return code == 0, err.strip()
+
+def delete(kind: str, name: str):
+    code, _, err = oc("delete", kind, name)
+    if code != 0:
+        logger.error(f"failed to delete {kind} {name}: {err.strip()}")
+    return code == 0
+
 def list_pipelines():
     # None when the list can't be read, so callers can tell that apart from "no pipelines"
     pipelines = get_json("pipeline")

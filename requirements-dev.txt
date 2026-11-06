@@ -1,4 +1,5 @@
 flask
 paramiko
+pyyaml
 pytest
 playwright

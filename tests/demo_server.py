@@ -3,6 +3,9 @@ fake SSH the tests use. Nothing touches a real cluster or machine.
 
     .venv/bin/python tests/demo_server.py [port]    # default 8080, admin token: demo
 
+Task templates for the pipeline builder are read from a ci-definitions clone
+next to this repo when there is one, otherwise from tests/templates.
+
 The controller loop runs every 5 s, so a started preset is scheduled like in
 the real deployment, and a running pipeline finishes after a minute. State is
 in memory and starts over on every launch.
@@ -23,6 +26,7 @@ import cluster  # noqa: E402
 import control  # noqa: E402
 import inform  # noqa: E402
 import machines  # noqa: E402
+import task_templates  # noqa: E402
 import web  # noqa: E402
 from fake_oc import FakeCluster  # noqa: E402
 from fake_ssh import LINUX_OK, WINDOWS_OK, FakeSSH, private_key  # noqa: E402
@@ -98,8 +102,12 @@ def main():
     inform.set_inform_message = lambda machine, run: logger.info(f"(demo) MOTD on {machine}: in use by {run}")
     inform.clean_inform_message = lambda machine: logger.info(f"(demo) MOTD on {machine} cleared")
     web.API_TOKEN = TOKEN
+    local_templates = HERE.parent.parent / "ci-definitions"
+    if local_templates.is_dir():
+        task_templates.TEMPLATE_DIR = str(local_templates)
     threading.Thread(target=controller_loop, args=(fake,), daemon=True).start()
     print(f"\n  Demo dashboard: http://localhost:{port}   admin token: {TOKEN}\n"
+          f"  Task templates from {task_templates.TEMPLATE_DIR}\n"
           "  Fake cluster and fake SSH only, nothing real is touched. Ctrl+C to stop.\n")
     web.app.run(host="127.0.0.1", port=port, threaded=True)
 

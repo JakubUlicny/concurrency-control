@@ -5,7 +5,8 @@
 * running oc, kubectl or tkn raises, and KUBECONFIG points at an empty file
   in case a call slips past that;
 * paramiko can't open connections, and machine checks run against FakeSSH;
-* log.py writes to a temp dir, because /var/log/app only exists in the image.
+* log.py writes to a temp dir, because /var/log/app only exists in the image;
+* Task templates are read from tests/templates, not from GitHub.
 """
 import os
 import subprocess
@@ -28,6 +29,9 @@ os.environ.update({
     "MACHINE_CM": "machine-status",
     "PIPELINE_CM": "pipeline-wait",
     "PRESET_CM": "pipeline-presets",
+    # Task templates come from these files, never from GitHub
+    "TEMPLATE_DIR": str(ROOT / "tests" / "templates"),
+    "TEMPLATE_REPO": "https://github.com/crc-org/ci-definitions",
     "LABEL_MACHINE_PR": "machine",
     "LAEBL_MACHINE_TASK": "task-machine",
     "LABEL_TASK": "build-installer",
@@ -55,6 +59,7 @@ import cluster  # noqa: E402
 import inform  # noqa: E402
 import machines  # noqa: E402
 import paramiko  # noqa: E402
+import task_templates  # noqa: E402
 import web  # noqa: E402
 from fake_oc import FakeCluster  # noqa: E402
 from fake_ssh import FakeSSH  # noqa: E402
@@ -84,9 +89,14 @@ def refuse_ssh(self, hostname, *args, **kwargs):
     raise OSError("SSH is disabled in tests")
 
 
+def refuse_http(url):
+    raise AssertionError(f"a test tried to fetch {url}")
+
+
 cluster.oc = refuse_oc
 subprocess.run = guarded_run
 paramiko.SSHClient.connect = refuse_ssh
+task_templates.http_get = refuse_http
 
 
 def pytest_addoption(parser):
@@ -113,6 +123,12 @@ def fake(monkeypatch):
     fake_cluster = FakeCluster(os.environ["MACHINE_CM"], os.environ["PIPELINE_CM"])
     monkeypatch.setattr(cluster, "oc", fake_cluster.oc)
     return fake_cluster
+
+
+@pytest.fixture(autouse=True)
+def fresh_templates():
+    # the template catalog is cached for minutes; every test starts without it
+    task_templates._cache.update(at=0.0, templates=None)
 
 
 @pytest.fixture(autouse=True)

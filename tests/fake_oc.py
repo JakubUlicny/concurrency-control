@@ -132,6 +132,8 @@ class FakeCluster:
                 return self._set_data(args[3], args[4])
             if args == ("create", "-f", "-"):
                 return self._create(json.loads(input))
+            if args == ("apply", "-f", "-"):
+                return self._apply(json.loads(input))
             if args == ("create", "-f", "-", "-o", "json"):
                 return self._create_pipelinerun(json.loads(input))
             if args[:2] == ("create", "configmap") and len(args) == 3:
@@ -198,6 +200,14 @@ class FakeCluster:
         self.add("secret", name, labels=manifest["metadata"].get("labels"),
                  type=manifest.get("type", "Opaque"), data=data)
         return 0, f"secret/{name} created\n", ""
+
+    def _apply(self, manifest):
+        assert manifest.get("kind") == "Pipeline", "only Pipelines are applied"
+        name = manifest["metadata"]["name"]
+        verb = "configured" if name in self.objects["pipeline"] else "created"
+        self.add("pipeline", name, labels=manifest["metadata"].get("labels"), apiVersion=manifest["apiVersion"],
+                 spec=copy.deepcopy(manifest["spec"]))
+        return 0, f"pipeline.tekton.dev/{name} {verb}\n", ""
 
     def _create_configmap(self, name):
         if name in self.objects["configmap"]:

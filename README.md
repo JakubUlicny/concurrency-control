@@ -20,6 +20,8 @@ on port 8080.
 | `LAEBL_MACHINE_TASK` | PipelineRun label naming a machine held only during one task         |
 | `LABEL_TASK`         | Name of the task that releases the `LAEBL_MACHINE_TASK` machine      |
 | `API_TOKEN`          | Bearer token for the machine API; the write endpoints are off if unset |
+| `TEMPLATE_REPO`      | GitHub repo with the Task templates for the pipeline builder, default `https://github.com/crc-org/ci-definitions` |
+| `TEMPLATE_DIR`       | Read the templates from this local folder instead of GitHub (demo, offline work) |
 | `PRESET_CM`          | ConfigMap holding the pipeline presets; presets are off if unset. Created on the first save |
 
 ## Machines
@@ -132,10 +134,18 @@ curl -X POST -H "Authorization: Bearer $API_TOKEN" http://<controller>:8080/api/
 curl -X DELETE -H "Authorization: Bearer $API_TOKEN" http://<controller>:8080/api/machines/<machine>
 ```
 
-Presets work the same way:
+Pipelines, templates and presets work the same way:
 
 ```sh
 curl http://<controller>:8080/api/pipelines   # Pipelines with their params and workspaces
+curl http://<controller>:8080/api/templates   # the Task templates the builder offers
+
+# create or replace a pipeline from templates; a step without "inputs" uses the template defaults
+curl -X PUT -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"steps": [{"name": "build", "template": "crc-builder/tkn/crc-builder.yaml"}]}' \
+  http://<controller>:8080/api/pipelines/crc-build-only
+curl -X DELETE -H "Authorization: Bearer $API_TOKEN" http://<controller>:8080/api/pipelines/crc-build-only
+
 curl http://<controller>:8080/api/presets
 
 # create or replace a preset
@@ -154,6 +164,39 @@ Machine names must be DNS-1123 labels: lowercase letters, digits and `-`.
 `DELETE` only removes a secret that the API created. Mounted secrets are left
 alone because the Deployment owns them. The service account needs `create`,
 `get`, `patch` and `delete` on secrets for these endpoints.
+
+## Building pipelines
+
+The **Pipelines** card lists the Tekton Pipelines in the namespace. After
+unlocking, **New pipeline** builds one from the Task templates in
+ci-definitions (`TEMPLATE_REPO`), always at `main`. Every YAML file in that repo
+that holds a `kind: Task` is offered, except the `tpl/` sources and `samples/`.
+The templates are only read. The Pipeline points at them with Tekton's git
+resolver, so they can't be changed from here, and a later change on `main` is
+picked up by the next run.
+
+For each step you pick a template and say:
+
+- **what it waits for.** A step waits for the previous one by default.
+  Untick it to run steps in parallel. A step can also run **at the end,
+  always**, as a Tekton `finally` task, even when other steps failed.
+- **where each input comes from:**
+  - **Template default:** the template's own default.
+  - **Fixed value:** the same on every run.
+  - **Ask when starting:** it becomes a Pipeline parameter that the preset
+    fills in. Steps asking for the same input share one parameter.
+  - **Output of an earlier step:** a result of an earlier step, for example
+    `check-bundle-url → bundle-base-url`.
+
+Template workspaces become Pipeline workspaces of the same name, and the
+preset binds them. Pipelines are saved as `tekton.dev/v1` with the label
+`concurrency-control/built=true`. Only those can be edited or deleted here. A
+Pipeline made elsewhere is read-only, and its name can't be reused.
+
+The controller reads the templates from GitHub, so it needs to reach
+`api.github.com` and `raw.githubusercontent.com`. It keeps them for 10
+minutes. The service account needs `get`, `list`, `create`, `patch` and
+`delete` on `pipelines`.
 
 ## Pipeline presets
 
@@ -192,7 +235,8 @@ python tests/demo_server.py          # or: python tests/demo_server.py 9000
 
 Open <http://localhost:8080> and unlock with the token `demo`. The dashboard
 runs against the same fake cluster and fake SSH as the tests, with a few demo
-machines, two Pipelines and a preset. It never touches a real cluster or
+machines, two Pipelines and a preset. The pipeline builder offers the
+templates from a `ci-definitions` clone next to this repo if there is one. It never touches a real cluster or
 machine. The controller loop runs every 5 s, so a started preset gets scheduled
 and its machine turns busy. Runs finish after a minute. **Check** on the demo
 machines shows a missing `go`, a missing `dotnet` and an unreachable host. A

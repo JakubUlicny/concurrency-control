@@ -5,7 +5,9 @@ from flask import Flask, render_template, jsonify, request
 import checks
 import configmap
 import machines
+import pipeline_builder
 import presets
+import task_templates
 import log
 
 API_TOKEN = os.environ.get("API_TOKEN")
@@ -39,6 +41,7 @@ def require_token(f):
     return wrapper
 
 @app.errorhandler(machines.MachineError)
+@app.errorhandler(task_templates.TemplateError)
 def handle_machine_error(e):
     return jsonify(error=str(e)), e.http_code
 
@@ -90,6 +93,25 @@ def remove_machine(name):
 @app.route('/api/pipelines', methods=['GET'])
 def list_pipelines():
     return jsonify(presets.list_pipelines())
+
+@app.route('/api/templates', methods=['GET'])
+def list_templates():
+    return jsonify(task_templates.list_templates())
+
+@app.route('/api/pipelines/<name>', methods=['GET'])
+def get_pipeline(name):
+    return jsonify(pipeline_builder.get_model(name))
+
+@app.route('/api/pipelines/<name>', methods=['PUT'])
+@require_token
+def save_pipeline(name):
+    return jsonify(pipeline_builder.save_pipeline(name, request.get_json(silent=True)))
+
+@app.route('/api/pipelines/<name>', methods=['DELETE'])
+@require_token
+def delete_pipeline(name):
+    pipeline_builder.delete_pipeline(name)
+    return "", 204
 
 @app.route('/api/presets', methods=['GET'])
 def list_presets():

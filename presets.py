@@ -54,6 +54,9 @@ def describe_pipeline(pipeline: dict):
     return {
         "name": pipeline["metadata"]["name"],
         "description": spec.get("description", ""),
+        # made in the web UI, so it can be edited and deleted there
+        "built": (pipeline["metadata"].get("labels") or {}).get("concurrency-control/built") == "true",
+        "steps": len(spec.get("tasks") or []) + len(spec.get("finally") or []),
         "params": [{"name": p["name"], "type": p.get("type", "string"), "default": p.get("default"),
                     "description": p.get("description", "")} for p in spec.get("params") or []],
         "workspaces": [{"name": w["name"], "optional": bool(w.get("optional")),

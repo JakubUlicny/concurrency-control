@@ -224,10 +224,40 @@
         .ws-row { display: flex; gap: 8px; }
         .ws-row select { width: auto; flex: 0 0 auto; }
         .ws-row input { flex: 1; min-width: 0; }
+        input[type=checkbox] { width: auto; }
+
+        /* pipeline builder */
+        #pipeline-form { display: grid; gap: 14px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+        #pipeline-form h3 { margin: 0; font-size: 15px; }
+        #pipeline-form p { margin: 0; }
+        #pipeline-form .form-actions { margin-top: 0; }
+        /* long template names in the dropdowns mustn't widen the form */
+        #pipeline-form > *, .step-card > *, .step-inputs > .input-row > * { min-width: 0; }
+        .step-inputs select, .step-inputs input { min-width: 0; max-width: 100%; }
+        .step-card { display: grid; gap: 10px; margin-bottom: 10px; padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+        .step-card.at-end { border-style: dashed; }
+        .step-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+        .step-no { min-width: 1.6em; font-weight: 700; color: var(--muted); }
+        .step-head input { flex: 0 1 190px; background: var(--surface); }
+        .step-head select { flex: 1 1 240px; width: auto; min-width: 0; background: var(--surface); }
+        .step-head button.link { margin-left: auto; color: var(--danger); }
+        .waits { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 13px; }
+        .waits label { display: inline-flex; align-items: center; gap: 5px; }
+        .step-inputs { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(170px, 1fr) minmax(170px, 1.6fr); gap: 6px 10px; align-items: start; font-size: 13px; }
+        .step-inputs .input-row { display: contents; }
+        .step-inputs .in-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; overflow-wrap: anywhere; }
+        .step-inputs .in-name .hint { display: block; font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-weight: 400; color: var(--muted); }
+        .step-inputs select, .step-inputs input { background: var(--surface); padding: 5px 8px; font-size: 13px; }
+        .step-inputs .note { color: var(--muted); padding-top: 6px; }
+
         /* phones; after the rules above so it wins over them */
         @media (max-width: 600px) {
             .ws-row { flex-direction: column; }
             .ws-row select { width: 100%; }
+            .step-inputs { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+            .step-inputs .in-name { margin-top: 8px; }
+            .step-inputs .note:empty { display: none; }
+            .step-head input, .step-head select { flex: 1 1 100%; }
         }
 
         .form-grid {
@@ -375,6 +405,54 @@
                     <tbody></tbody>
                 </table>
             </div>
+        </section>
+
+        <section class="card" id="pipelines-card">
+            <div class="card-head">
+                <h2>Pipelines</h2>
+                <button type="button" id="new-pipeline-btn" class="primary" hidden>New pipeline</button>
+            </div>
+            <p id="pipelines-locked-hint" class="muted small" hidden>
+                <button type="button" class="link" id="pipelines-unlock">Enter the admin token</button> to build pipelines from the ci-definitions templates.
+            </p>
+            <div class="table-wrap">
+                <table id="pipelines">
+                    <thead>
+                        <tr>
+                            <th>Pipeline</th>
+                            <th class="col-extra">Steps</th>
+                            <th class="col-extra">Made</th>
+                            <th id="pipeline-action-col" aria-label="Actions"></th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <p id="pipelines-msg" class="msg" role="status" hidden></p>
+
+            <form id="pipeline-form" autocomplete="off" hidden>
+                <h3 id="pipeline-form-title">New pipeline</h3>
+                <p class="muted small">Every step is a Task template from ci-definitions at <code>main</code>. The templates can't be changed here.</p>
+                <div class="form-grid">
+                    <div class="field">
+                        <label for="pl-name">Name</label>
+                        <input id="pl-name" required placeholder="e.g. crc-qe-quick"
+                            pattern="[a-z0-9]([\-a-z0-9]{0,61}[a-z0-9])?" maxlength="63">
+                    </div>
+                    <div class="field">
+                        <label for="pl-desc">Description</label>
+                        <input id="pl-desc" placeholder="optional">
+                    </div>
+                </div>
+                <div id="pl-steps"></div>
+                <div><button type="button" id="pl-add-step">+ Add step</button></div>
+                <p id="pl-order" class="muted small"></p>
+                <div class="form-actions">
+                    <button type="submit" class="primary" id="pipeline-save">Save pipeline</button>
+                    <button type="button" id="pipeline-cancel">Cancel</button>
+                </div>
+                <p id="pipeline-msg" class="msg" role="status" hidden></p>
+            </form>
         </section>
 
         <section class="card" id="presets-card">
@@ -604,6 +682,308 @@
             } finally {
                 checking.delete(name);
                 renderMachines();
+            }
+        }
+
+        // ---------------- pipelines built from templates ----------------
+
+        let pipelineList = [];     // every Pipeline in the namespace
+        let catalog = [];          // the Task templates, loaded when the builder opens
+        let draft = null;          // the pipeline in the builder: {steps: [...]}
+        let editingPipeline = null;
+
+        function renderPipelines(error) {
+            const unlocked = API_ENABLED && !!token;
+            $("new-pipeline-btn").hidden = !unlocked;
+            $("pipelines-locked-hint").hidden = !(API_ENABLED && !unlocked);
+            $("pipeline-action-col").hidden = !unlocked;
+            const rows = pipelineList.map(p => {
+                const made = p.built ? "here" : "elsewhere";
+                const row = el("tr", {},
+                    el("td", { className: "name" }, p.name, el("span", { className: "sub", textContent: `${p.steps} steps · made ${made}` })),
+                    el("td", { className: "col-extra", textContent: p.steps }),
+                    el("td", { className: "muted col-extra", textContent: made }));
+                if (unlocked) {
+                    const cell = el("td", { className: "actions" });
+                    if (p.built) {
+                        const edit = el("button", { type: "button", textContent: "Edit", title: `Edit pipeline ${p.name}` });
+                        edit.addEventListener("click", () => openPipelineForm(p.name));
+                        const del = el("button", { type: "button", className: "danger", textContent: "Delete", title: `Delete pipeline ${p.name}` });
+                        del.addEventListener("click", () => deletePipeline(p.name, del));
+                        cell.append(el("span", { className: "action-buttons" }, edit, del));
+                    } else {
+                        cell.append(el("span", { className: "muted small", textContent: "read-only" }));
+                    }
+                    row.append(cell);
+                }
+                return row;
+            });
+            if (!rows.length) {
+                const text = error ? `Can't read the pipelines: ${error}` : "No pipelines in this namespace.";
+                rows.push(el("tr", {}, el("td", { className: "empty", colSpan: unlocked ? 4 : 3, textContent: text })));
+            }
+            $("pipelines").tBodies[0].replaceChildren(...rows);
+        }
+
+        async function refreshPipelines() {
+            // separate from refresh(): missing access to pipelines mustn't mark the whole page stale
+            try {
+                pipelineList = await fetch("/api/pipelines").then(async res => {
+                    if (res.ok) return res.json();
+                    throw new Error((await res.json().catch(() => ({}))).error || res.status);
+                });
+                renderPipelines();
+            } catch (e) {
+                pipelineList = [];
+                renderPipelines(e.message);
+            }
+        }
+
+        const templateOf = path => catalog.find(t => t.path === path);
+        const mainSteps = () => draft.steps.filter(s => !s.finally);
+
+        // steps a step may wait for or take outputs from: earlier main steps; a step at the end may use any main step
+        function earlierSteps(step) {
+            const index = draft.steps.indexOf(step);
+            return step.finally ? mainSteps() : draft.steps.slice(0, index).filter(s => !s.finally);
+        }
+
+        function sourcesFor(param, step) {
+            const sources = [];
+            if (param.default !== null && param.default !== undefined) {
+                sources.push(["default", `Template default (${JSON.stringify(param.default)})`]);
+            }
+            if (param.type === "string") sources.push(["fixed", "Fixed value"]);
+            sources.push(["start", "Ask when starting"]);
+            if (param.type === "string" && earlierSteps(step).some(s => templateOf(s.template)?.results.length)) {
+                sources.push(["step", "Output of an earlier step"]);
+            }
+            return sources;
+        }
+
+        function inputRow(step, param) {
+            const sources = sourcesFor(param, step);
+            let current = step.inputs[param.name];
+            if (!current || !sources.some(([value]) => value === current.from)) {
+                // the template's default if it has one, otherwise asked when starting
+                current = { from: sources[0][0] === "default" ? "default" : "start" };
+                step.inputs[param.name] = current;
+            }
+            const select = el("select", { ariaLabel: `${step.name}: ${param.name} comes from` },
+                ...sources.map(([value, text]) => el("option", { value, textContent: text })));
+            select.value = current.from;
+            select.addEventListener("change", () => { step.inputs[param.name] = { from: select.value }; renderSteps(); });
+
+            let value;
+            if (current.from === "fixed") {
+                value = el("input", { value: current.value ?? "", ariaLabel: `${step.name}: ${param.name} value`, placeholder: "value" });
+                current.value = value.value;
+                value.addEventListener("input", () => { current.value = value.value; });
+            } else if (current.from === "step") {
+                const options = earlierSteps(step).flatMap(s => (templateOf(s.template)?.results || []).map(r =>
+                    el("option", { value: `${s.name}\n${r.name}`, textContent: `${s.name} → ${r.name}` })));
+                value = el("select", { ariaLabel: `${step.name}: ${param.name} output` }, ...options);
+                const chosen = `${current.step}\n${current.result}`;
+                value.value = options.some(o => o.value === chosen) ? chosen : options[0].value;
+                [current.step, current.result] = value.value.split("\n");
+                value.addEventListener("change", () => { [current.step, current.result] = value.value.split("\n"); renderOrder(); });
+            } else {
+                value = el("span", { className: "note", textContent: current.from === "start" ? "filled in by the preset" : "" });
+            }
+            const required = param.default === null || param.default === undefined;
+            const row = el("div", { className: "input-row" },
+                el("span", { className: "in-name" }, param.name, required ? el("span", { className: "req", textContent: " required" }) : "",
+                    el("span", { className: "hint", textContent: param.description })),
+                select, value);
+            row.dataset.param = param.name;
+            return row;
+        }
+
+        function templateSelect(step) {
+            const groups = {};
+            for (const t of catalog) (groups[t.path.split("/")[0]] ??= []).push(t);
+            const select = el("select", { required: true, ariaLabel: `${step.name}: template` },
+                el("option", { value: "", textContent: "Choose a template…" }),
+                ...Object.entries(groups).map(([folder, templates]) => el("optgroup", { label: folder },
+                    ...templates.map(t => el("option", { value: t.path, textContent: `${t.name} (${t.path})` })))));
+            select.value = step.template;
+            select.addEventListener("change", () => {
+                const template = templateOf(select.value);
+                if (template && /^step-\d+$/.test(step.name)) renameStep(step, uniqueStepName(template.name, step));
+                step.template = select.value;
+                step.inputs = {};
+                renderSteps();
+            });
+            return select;
+        }
+
+        function uniqueStepName(base, except) {
+            const taken = new Set(draft.steps.filter(s => s !== except).map(s => s.name));
+            let name = base, n = 2;
+            while (taken.has(name)) name = `${base}-${n++}`;
+            return name;
+        }
+
+        function renameStep(step, name) {
+            for (const other of draft.steps) {
+                other.run_after = other.run_after.map(r => r === step.name ? name : r);
+                for (const input of Object.values(other.inputs)) if (input.from === "step" && input.step === step.name) input.step = name;
+            }
+            step.name = name;
+        }
+
+        function forgetStep(step) {
+            for (const other of draft.steps) {
+                other.run_after = other.run_after.filter(r => r !== step.name);
+                for (const [param, input] of Object.entries(other.inputs)) {
+                    if (input.from === "step" && input.step === step.name) delete other.inputs[param];
+                }
+            }
+        }
+
+        function placeSteps() {
+            // steps at the end come last, the others before them
+            draft.steps = [...mainSteps(), ...draft.steps.filter(s => s.finally)];
+        }
+
+        function stepCard(step, index) {
+            const template = templateOf(step.template);
+            const name = el("input", { value: step.name, required: true, pattern: "[a-z0-9]([\\-a-z0-9]{0,61}[a-z0-9])?", ariaLabel: `step ${index + 1} name` });
+            name.addEventListener("change", () => { renameStep(step, name.value.trim()); renderSteps(); });
+            const when = el("select", { ariaLabel: `${step.name}: when it runs` },
+                el("option", { value: "main", textContent: "In the main flow" }),
+                el("option", { value: "end", textContent: "At the end, always" }));
+            when.value = step.finally ? "end" : "main";
+            when.addEventListener("change", () => {
+                step.finally = when.value === "end";
+                if (step.finally) { step.run_after = []; forgetStep(step); }
+                placeSteps();
+                renderSteps();
+            });
+            const remove = el("button", { type: "button", className: "link", textContent: "Remove step" });
+            remove.addEventListener("click", () => { forgetStep(step); draft.steps.splice(draft.steps.indexOf(step), 1); renderSteps(); });
+
+            const card = el("div", { className: `step-card${step.finally ? " at-end" : ""}` },
+                el("div", { className: "step-head" }, el("span", { className: "step-no", textContent: index + 1 }), name, templateSelect(step), when, remove));
+            card.dataset.step = step.name;
+            if (template?.description) card.append(el("p", { className: "muted small", textContent: template.description }));
+            if (!step.finally) {
+                const earlier = earlierSteps(step);
+                const waits = el("div", { className: "waits" }, el("span", { className: "muted", textContent: "Waits for:" }));
+                if (!earlier.length) waits.append(el("span", { textContent: "nothing, starts right away" }));
+                for (const other of earlier) {
+                    const box = el("input", { type: "checkbox", checked: step.run_after.includes(other.name) });
+                    box.addEventListener("change", () => {
+                        step.run_after = box.checked ? [...step.run_after, other.name] : step.run_after.filter(r => r !== other.name);
+                        renderOrder();
+                    });
+                    waits.append(el("label", {}, box, other.name));
+                }
+                card.append(waits);
+            } else {
+                card.append(el("p", { className: "muted small", textContent: "Runs after all the other steps, even if one of them failed." }));
+            }
+            if (template?.params.length) {
+                card.append(el("div", { className: "step-inputs" }, ...template.params.map(p => inputRow(step, p))));
+            }
+            return card;
+        }
+
+        function renderOrder() {
+            // which steps run together: a step starts after the steps it waits for or takes outputs from
+            const level = {};
+            for (const step of mainSteps()) {
+                const deps = [...step.run_after, ...Object.values(step.inputs).filter(i => i.from === "step").map(i => i.step)];
+                level[step.name] = 1 + Math.max(0, ...deps.map(d => level[d] || 0));
+            }
+            const stages = [];
+            for (const [name, l] of Object.entries(level)) (stages[l - 1] ??= []).push(name);
+            const atEnd = draft.steps.filter(s => s.finally).map(s => s.name);
+            const flow = stages.filter(Boolean).map(names => names.join(" + ")).join("  →  ");
+            $("pl-order").textContent = flow ? `Order: ${flow}${atEnd.length ? `  →  at the end: ${atEnd.join(", ")}` : ""}` : "";
+        }
+
+        function renderSteps() {
+            $("pl-steps").replaceChildren(...draft.steps.map(stepCard));
+            renderOrder();
+        }
+
+        function addStep() {
+            const main = mainSteps();
+            const step = { name: uniqueStepName(`step-${draft.steps.length + 1}`), template: "", finally: false,
+                           run_after: main.length ? [main[main.length - 1].name] : [], inputs: {} };
+            draft.steps.splice(main.length, 0, step);
+            renderSteps();
+        }
+
+        async function openPipelineForm(name) {
+            editingPipeline = name;
+            $("pipeline-form-title").textContent = name ? `Edit pipeline ${name}` : "New pipeline";
+            $("pl-name").value = name || "";
+            $("pl-name").readOnly = !!name;
+            $("pipeline-msg").hidden = true;
+            $("pl-steps").replaceChildren(el("p", { className: "muted small", textContent: "Loading the templates…" }));
+            $("pl-order").textContent = "";
+            $("pipeline-form").hidden = false;
+            $("pipeline-form").scrollIntoView({ block: "nearest" });
+            try {
+                catalog = await api("GET", "/api/templates");
+                draft = name ? await api("GET", `/api/pipelines/${encodeURIComponent(name)}`) : { description: "", steps: [] };
+            } catch (e) {
+                $("pl-steps").replaceChildren();
+                flash($("pipeline-msg"), `Couldn't open the builder: ${e.message}`, "error");
+                return;
+            }
+            if (editingPipeline !== name || $("pipeline-form").hidden) return;
+            $("pl-desc").value = draft.description || "";
+            if (!draft.steps.length) addStep(); else renderSteps();
+            (name ? $("pl-desc") : $("pl-name")).focus();
+        }
+
+        function closePipelineForm() {
+            editingPipeline = null;
+            draft = null;
+            $("pipeline-form").hidden = true;
+        }
+
+        $("new-pipeline-btn").addEventListener("click", () => openPipelineForm(null));
+        $("pipeline-cancel").addEventListener("click", closePipelineForm);
+        $("pipelines-unlock").addEventListener("click", () => $("token-input").focus());
+        $("pl-add-step").addEventListener("click", addStep);
+
+        $("pipeline-form").addEventListener("submit", async ev => {
+            ev.preventDefault();
+            const name = editingPipeline || $("pl-name").value.trim();
+            const existing = pipelineList.find(p => p.name === name);
+            if (!editingPipeline && existing?.built && !confirm(`Pipeline ${name} already exists. Replace it?`)) return;
+            const body = {
+                description: $("pl-desc").value.trim(),
+                steps: draft.steps.map(s => ({ name: s.name, template: s.template, finally: s.finally, run_after: s.run_after, inputs: s.inputs })),
+            };
+            $("pipeline-save").disabled = true;
+            try {
+                await api("PUT", `/api/pipelines/${encodeURIComponent(name)}`, body);
+                closePipelineForm();
+                flash($("pipelines-msg"), `Saved pipeline ${name}. Presets can use it now.`, "ok");
+                await refreshPipelines();
+            } catch (e) {
+                flash($("pipeline-msg"), e.message, "error");
+            } finally {
+                $("pipeline-save").disabled = false;
+            }
+        });
+
+        async function deletePipeline(name, btn) {
+            if (!confirm(`Delete pipeline ${name}?\n\nPresets that use it can't start until they're edited. Runs already started aren't affected.`)) return;
+            btn.disabled = true;
+            try {
+                await api("DELETE", `/api/pipelines/${encodeURIComponent(name)}`);
+                if (editingPipeline === name) closePipelineForm();
+                flash($("pipelines-msg"), `Deleted pipeline ${name}.`, "ok");
+                await refreshPipelines();
+            } catch (e) {
+                flash($("pipelines-msg"), e.message, "error");
+                btn.disabled = false;
             }
         }
 
@@ -857,7 +1237,9 @@
             $("locked-hint").hidden = unlocked;
             if (!unlocked) $("add-msg").hidden = true;
             if (!unlocked) closePresetForm();
+            if (!unlocked) closePipelineForm();
             renderMachines();
+            renderPipelines();
             renderPresets();
         }
 
@@ -943,6 +1325,7 @@
                 renderMachines();
                 renderRuns();
                 renderPresets();
+                refreshPipelines();
                 $("updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
                 $("updated").classList.remove("stale");
             } catch {
@@ -964,6 +1347,7 @@
 
         renderAuth();
         renderRuns();
+        refreshPipelines();
         $("updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
         $("log").scrollTop = $("log").scrollHeight;
         setInterval(refresh, 10000);

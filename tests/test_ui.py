@@ -17,7 +17,9 @@ from werkzeug.serving import make_server
 
 import control
 import machines
+import pipeline_builder
 import presets as presets_module
+import task_templates
 import web
 from fake_ssh import private_key
 
@@ -911,6 +913,177 @@ def test_presets_on_a_phone(fake, api_token, open_page, width):
     page.select_option('[data-workspace="cache"] select', "persistentVolumeClaim")
     assert page.evaluate("document.documentElement.scrollWidth") <= width
     assert page.eval_on_selector("#presets", "t => t.closest('.table-wrap').scrollWidth <= t.closest('.table-wrap').clientWidth")
+
+
+# ---------------- building pipelines from templates ----------------
+
+CHECK = "crc-support/tkn/check-bundle-url.yaml"
+BUILD = "crc-builder/tkn/crc-builder.yaml"
+E2E = "crc-e2e/task.yaml"
+
+
+def step_card(page, index):
+    return page.locator("#pl-steps .step-card").nth(index)
+
+
+def choose_template(page, index, path):
+    step_card(page, index).locator(".step-head select").first.select_option(path)
+
+
+def input_row(page, index, param):
+    return step_card(page, index).locator(f'.input-row[data-param="{param}"]')
+
+
+def input_source(page, index, param):
+    return input_row(page, index, param).locator("select").first
+
+
+def built_pipeline(name="qe-quick"):
+    return {"description": "quick QE", "steps": [
+        {"name": "check", "template": CHECK, "inputs": {"bundle-base-url": {"from": "start"}, "bundle-name": {"from": "start"}}},
+        {"name": "build", "template": BUILD},
+        {"name": "test", "template": E2E, "run_after": ["check", "build"],
+         "inputs": {"secret-host": {"from": "start"}, "os": {"from": "fixed", "value": "linux"},
+                    "bundle-location": {"from": "step", "step": "check", "result": "bundle-base-url"}}},
+    ]}
+
+
+def test_pipelines_are_listed_with_where_they_were_made(fake, api_token, open_page):
+    fake.add_pipeline("crc-qe-latest")
+    pipeline_builder.save_pipeline("qe-quick", built_pipeline())
+    page = open_page()
+    expect(page.locator("#pipelines tbody tr")).to_have_count(2)
+    assert rows(page, "pipelines") == [["crc-qe-latest", "1", "elsewhere"], ["qe-quick", "3", "here"]]
+    unlock(page, api_token)
+    expect(page.locator("#pipelines tbody tr").nth(0)).to_contain_text("read-only")
+    expect(page.locator("#pipelines tbody tr").nth(1).get_by_role("button", name="Edit")).to_be_visible()
+
+
+def test_build_a_pipeline_with_parallel_steps(fake, api_token, open_page):
+    page = open_page(token=api_token)
+    page.click("#new-pipeline-btn")
+    expect(step_card(page, 0)).to_be_visible()
+    choose_template(page, 0, CHECK)
+    expect(step_card(page, 0).locator(".step-head input")).to_have_value("check-bundle-url")  # named after the template
+    expect(input_source(page, 0, "bundle-base-url")).to_have_value("start")      # required: asked when starting
+    expect(input_source(page, 0, "bundle-shasumfile")).to_have_value("default")  # has a default: uses it
+
+    page.click("#pl-add-step")
+    choose_template(page, 1, BUILD)
+    expect(step_card(page, 1).locator(".waits input")).to_be_checked()  # waits for the previous step by default
+    step_card(page, 1).locator(".waits input").uncheck()                # ...unless it should run in parallel
+
+    page.click("#pl-add-step")
+    choose_template(page, 2, E2E)
+    step_card(page, 2).locator(".waits label").filter(has_text="check-bundle-url").locator("input").check()
+    input_source(page, 2, "os").select_option("fixed")
+    input_row(page, 2, "os").locator("input").fill("linux")
+    input_source(page, 2, "bundle-location").select_option("step")
+    expect(page.locator("#pl-order")).to_have_text("Order: check-bundle-url + crc-builder  →  crc-e2e-test")
+
+    page.fill("#pl-name", "qe-quick")
+    page.click("#pipeline-save")
+    expect(page.locator("#pipelines-msg")).to_have_text("Saved pipeline qe-quick. Presets can use it now.")
+    expect(page.locator("#pipeline-form")).to_be_hidden()
+    tasks = fake.objects["pipeline"]["qe-quick"]["spec"]["tasks"]
+    assert [(t["name"], t.get("runAfter")) for t in tasks] == [
+        ("check-bundle-url", None), ("crc-builder", None), ("crc-e2e-test", ["crc-builder", "check-bundle-url"])]
+    assert {p["name"]: p["value"] for p in tasks[2]["params"]} == {
+        "secret-host": "$(params.secret-host)", "os": "linux",
+        "bundle-location": "$(tasks.check-bundle-url.results.bundle-base-url)"}
+    expect(page.locator("#pipelines tbody tr")).to_have_count(1)
+
+
+def test_step_at_the_end_moves_last_and_waits_for_everything(fake, api_token, open_page):
+    page = open_page(token=api_token)
+    page.click("#new-pipeline-btn")
+    choose_template(page, 0, BUILD)
+    page.click("#pl-add-step")
+    choose_template(page, 1, CHECK)
+    step_card(page, 0).locator(".step-head select").nth(1).select_option("end")
+    expect(step_card(page, 1)).to_have_class(re.compile("at-end"))
+    expect(step_card(page, 1).locator(".step-head input")).to_have_value("crc-builder")
+    expect(step_card(page, 1).locator(".waits")).to_have_count(0)
+    expect(step_card(page, 0).locator(".waits")).to_contain_text("nothing, starts right away")
+    expect(page.locator("#pl-order")).to_have_text("Order: check-bundle-url  →  at the end: crc-builder")
+
+
+def test_removing_a_step_drops_what_pointed_at_it(fake, api_token, open_page):
+    page = open_page(token=api_token)
+    page.click("#new-pipeline-btn")
+    choose_template(page, 0, CHECK)
+    page.click("#pl-add-step")
+    choose_template(page, 1, E2E)
+    input_source(page, 1, "bundle-location").select_option("step")
+    step_card(page, 0).get_by_role("button", name="Remove step").click()
+    expect(page.locator("#pl-steps .step-card")).to_have_count(1)
+    expect(step_card(page, 0).locator(".waits")).to_contain_text("nothing, starts right away")
+    expect(input_source(page, 0, "bundle-location")).to_have_value("start")
+    expect(input_source(page, 0, "bundle-location").locator("option")).not_to_contain_text(["Output of an earlier step"])
+
+
+def test_edit_pipeline_starts_from_its_steps(fake, api_token, open_page):
+    pipeline_builder.save_pipeline("qe-quick", built_pipeline())
+    page = open_page(token=api_token)
+    page.locator("#pipelines tbody tr").get_by_role("button", name="Edit").click()
+    expect(page.locator("#pipeline-form-title")).to_have_text("Edit pipeline qe-quick")
+    expect(page.locator("#pl-name")).to_have_attribute("readonly", "")
+    expect(page.locator("#pl-desc")).to_have_value("quick QE")
+    expect(page.locator("#pl-steps .step-card")).to_have_count(3)
+    expect(input_source(page, 2, "bundle-location")).to_have_value("step")
+    expect(input_row(page, 2, "os").locator("input")).to_have_value("linux")
+    page.fill("#pl-desc", "quicker QE")
+    page.click("#pipeline-save")
+    expect(page.locator("#pipelines-msg")).to_have_text("Saved pipeline qe-quick. Presets can use it now.")
+    assert fake.objects["pipeline"]["qe-quick"]["spec"]["description"] == "quicker QE"
+
+
+def test_saving_over_a_pipeline_made_elsewhere_is_refused(fake, api_token, open_page):
+    fake.add_pipeline("crc-qe-latest")
+    page = open_page(token=api_token)
+    page.click("#new-pipeline-btn")
+    choose_template(page, 0, BUILD)
+    page.fill("#pl-name", "crc-qe-latest")
+    page.click("#pipeline-save")
+    expect(page.locator("#pipeline-msg")).to_have_text(
+        "pipeline crc-qe-latest already exists and wasn't made here, pick another name")
+    expect(page.locator("#pipeline-form")).to_be_visible()
+
+
+def test_delete_pipeline(fake, api_token, open_page):
+    pipeline_builder.save_pipeline("qe-quick", built_pipeline())
+    page = open_page(token=api_token)
+    questions = []
+    page.on("dialog", lambda dialog: (questions.append(dialog.message), dialog.accept()))
+    page.locator("#pipelines tbody tr").get_by_role("button", name="Delete").click()
+    expect(page.locator("#pipelines-msg")).to_have_text("Deleted pipeline qe-quick.")
+    assert questions[0].startswith("Delete pipeline qe-quick?")
+    assert "qe-quick" not in fake.objects["pipeline"]
+
+
+def test_builder_without_templates_explains(fake, api_token, open_page, monkeypatch, tmp_path):
+    monkeypatch.setattr(task_templates, "TEMPLATE_DIR", str(tmp_path))
+    page = open_page(token=api_token)
+    page.click("#new-pipeline-btn")
+    expect(page.locator("#pipeline-msg")).to_have_text(f"Couldn't open the builder: no Task templates found in {tmp_path}")
+
+
+def test_unreadable_pipelines_do_not_mark_the_page_stale(fake, open_page):
+    fake.fail("get", "pipeline", stderr="Error from server (Forbidden)")
+    page = open_page()
+    expect(page.locator("#pipelines tbody")).to_have_text("Can't read the pipelines: can't read the pipelines from the cluster")
+    advance_to_refresh(page)
+    expect(page.locator("#updated")).not_to_have_class(re.compile("stale"))
+
+
+@pytest.mark.parametrize("width", [320, 390])
+def test_builder_on_a_phone(fake, api_token, open_page, width):
+    page = open_page(token=api_token, viewport={"width": width, "height": 800})
+    page.click("#new-pipeline-btn")
+    choose_template(page, 0, CHECK)
+    page.click("#pl-add-step")
+    choose_template(page, 1, E2E)
+    assert page.evaluate("document.documentElement.scrollWidth") <= width
 
 
 # ---------------- staying current ----------------
