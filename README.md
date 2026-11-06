@@ -183,6 +183,22 @@ as `tekton.dev/v1`, which needs OpenShift Pipelines 1.11 or newer. The service
 account needs `get` and `list` on `pipelines`, `create` on `pipelineruns`, and
 `create`, `get` and `patch` on configmaps.
 
+## Trying it locally
+
+```sh
+pip install -r requirements-dev.txt
+python tests/demo_server.py          # or: python tests/demo_server.py 9000
+```
+
+Open <http://localhost:8080> and unlock with the token `demo`. The dashboard
+runs against the same fake cluster and fake SSH as the tests, with a few demo
+machines, two Pipelines and a preset. It never touches a real cluster or
+machine. The controller loop runs every 5 s, so a started preset gets scheduled
+and its machine turns busy. Runs finish after a minute. **Check** on the demo
+machines shows a missing `go`, a missing `dotnet` and an unreachable host. A
+machine you add yourself checks as a healthy Linux host. Everything is kept in
+memory and starts over on the next launch.
+
 ## Tests
 
 The tests run against an in-memory fake of `oc` and never touch a real
