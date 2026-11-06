@@ -27,6 +27,7 @@ os.environ.update({
     "NAMESPACE": "ci",
     "MACHINE_CM": "machine-status",
     "PIPELINE_CM": "pipeline-wait",
+    "PRESET_CM": "pipeline-presets",
     "LABEL_MACHINE_PR": "machine",
     "LAEBL_MACHINE_TASK": "task-machine",
     "LABEL_TASK": "build-installer",

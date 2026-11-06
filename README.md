@@ -20,6 +20,7 @@ on port 8080.
 | `LAEBL_MACHINE_TASK` | PipelineRun label naming a machine held only during one task         |
 | `LABEL_TASK`         | Name of the task that releases the `LAEBL_MACHINE_TASK` machine      |
 | `API_TOKEN`          | Bearer token for the machine API; the write endpoints are off if unset |
+| `PRESET_CM`          | ConfigMap holding the pipeline presets; presets are off if unset. Created on the first save |
 
 ## Machines
 
@@ -131,10 +132,56 @@ curl -X POST -H "Authorization: Bearer $API_TOKEN" http://<controller>:8080/api/
 curl -X DELETE -H "Authorization: Bearer $API_TOKEN" http://<controller>:8080/api/machines/<machine>
 ```
 
+Presets work the same way:
+
+```sh
+curl http://<controller>:8080/api/pipelines   # Pipelines with their params and workspaces
+curl http://<controller>:8080/api/presets
+
+# create or replace a preset
+curl -X PUT -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"pipeline": "crc-e2e", "machine": "linux-1", "params": {"crc-version": "2.45.0"},
+       "workspaces": {"source": {"type": "volumeClaimTemplate", "value": "1Gi"}}}' \
+  http://<controller>:8080/api/presets/e2e-linux
+
+# start it: answers {"pipelinerun": "e2e-linux-x7k2p", ...}
+curl -X POST -H "Authorization: Bearer $API_TOKEN" http://<controller>:8080/api/presets/e2e-linux/start
+
+curl -X DELETE -H "Authorization: Bearer $API_TOKEN" http://<controller>:8080/api/presets/e2e-linux
+```
+
 Machine names must be DNS-1123 labels: lowercase letters, digits and `-`.
 `DELETE` only removes a secret that the API created. Mounted secrets are left
 alone because the Deployment owns them. The service account needs `create`,
 `get`, `patch` and `delete` on secrets for these endpoints.
+
+## Pipeline presets
+
+A preset saves everything needed to run a pipeline on a machine: the Pipeline,
+its parameter values, how its workspaces are bound, the machine(s), and
+optionally a service account and timeout. **Start** then creates a new
+PipelineRun from it. The run is named `<preset>-<5 random characters>`, created
+`Pending` with the machine labels, and labelled
+`concurrency-control/preset=<preset>`. The controller starts it once the
+machines are free, the same as any other run.
+
+In the web UI, unlock and click **New preset**. Pick a Pipeline, and its
+parameters and workspaces appear as fields. A parameter left empty uses the
+Pipeline's default. Only string parameters can be set, array and object ones
+always use their default. A workspace can be a new volume for each run, an
+existing PVC, a secret, a ConfigMap or an empty directory.
+
+A preset is checked against the Pipeline and the machines when it's saved, and
+again on every start. If the Pipeline has gained a required parameter, or a
+machine was removed, **Start** says so and the preset needs editing first.
+
+A run that's waiting for its machine doesn't show under Running pipelines yet.
+It appears there once the controller starts it.
+
+Presets are stored as JSON in `PRESET_CM`, one key per preset. Runs are created
+as `tekton.dev/v1`, which needs OpenShift Pipelines 1.11 or newer. The service
+account needs `get` and `list` on `pipelines`, `create` on `pipelineruns`, and
+`create`, `get` and `patch` on configmaps.
 
 ## Tests
 

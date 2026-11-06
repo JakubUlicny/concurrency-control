@@ -5,6 +5,7 @@ from flask import Flask, render_template, jsonify, request
 import checks
 import configmap
 import machines
+import presets
 import log
 
 API_TOKEN = os.environ.get("API_TOKEN")
@@ -44,7 +45,9 @@ def handle_machine_error(e):
 @app.route('/')
 def machine_status():
     return render_template('status.html', machines=machines.list_machines(), runs=get_runs(),
-                           log_contents=get_log_contents(), api_enabled=bool(API_TOKEN), label_task=LABEL_TASK)
+                           log_contents=get_log_contents(), api_enabled=bool(API_TOKEN), label_task=LABEL_TASK,
+                           presets_enabled=presets.enabled(),
+                           presets=presets.list_presets() if presets.enabled() else {})
 
 @app.route('/log')
 def log_data():
@@ -83,6 +86,30 @@ def check_machine(name):
 def remove_machine(name):
     machines.remove_machine(name)
     return "", 204
+
+@app.route('/api/pipelines', methods=['GET'])
+def list_pipelines():
+    return jsonify(presets.list_pipelines())
+
+@app.route('/api/presets', methods=['GET'])
+def list_presets():
+    return jsonify(presets.list_presets())
+
+@app.route('/api/presets/<name>', methods=['PUT'])
+@require_token
+def save_preset(name):
+    return jsonify(presets.save_preset(name, request.get_json(silent=True)))
+
+@app.route('/api/presets/<name>', methods=['DELETE'])
+@require_token
+def delete_preset(name):
+    presets.delete_preset(name)
+    return "", 204
+
+@app.route('/api/presets/<name>/start', methods=['POST'])
+@require_token
+def start_preset(name):
+    return jsonify(presets.start_preset(name)), 201
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)

@@ -200,6 +200,35 @@
 
         fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 
+        select {
+            width: 100%;
+            font: inherit;
+            color: inherit;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 7px 10px;
+        }
+
+        select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+        input:disabled { opacity: .6; }
+
+        /* preset editor */
+        #preset-form { display: grid; gap: 16px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+        #preset-form h3 { margin: 0; font-size: 15px; }
+        #preset-form legend, #preset-form summary { padding: 0; margin-bottom: 8px; font-size: 13px; font-weight: 700; color: var(--muted); }
+        #preset-form summary { cursor: pointer; }
+        #preset-form .form-actions { margin-top: 0; }
+        .field .label { font-size: 13px; font-weight: 600; }
+        .field .req { font-weight: 400; color: var(--muted); }
+        .ws-row { display: flex; gap: 8px; }
+        .ws-row select { width: auto; flex: 0 0 auto; }
+        .ws-row input { flex: 1; min-width: 0; }
+        /* phones; after the rules above so it wins over them */
+        @media (max-width: 600px) {
+            .ws-row { flex-direction: column; }
+            .ws-row select { width: 100%; }
+        }
 
         .form-grid {
             display: grid;
@@ -348,6 +377,86 @@
             </div>
         </section>
 
+        <section class="card" id="presets-card">
+            <div class="card-head">
+                <h2>Pipeline presets</h2>
+                <button type="button" id="new-preset-btn" class="primary" hidden>New preset</button>
+            </div>
+            <p id="presets-disabled" class="muted small" hidden>
+                Presets are turned off because the controller has no <code>PRESET_CM</code> set.
+            </p>
+            <p id="presets-locked-hint" class="muted small" hidden>
+                <button type="button" class="link" id="presets-unlock">Enter the admin token</button> to create or start presets.
+            </p>
+            <div class="table-wrap" id="presets-wrap">
+                <table id="presets">
+                    <thead>
+                        <tr>
+                            <th>Preset</th>
+                            <th class="col-extra">Pipeline</th>
+                            <th class="col-extra">Machine</th>
+                            <th id="preset-action-col" aria-label="Actions"></th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <p id="presets-msg" class="msg" role="status" hidden></p>
+
+            <form id="preset-form" autocomplete="off" hidden>
+                <h3 id="preset-form-title">New preset</h3>
+                <div class="form-grid">
+                    <div class="field">
+                        <label for="p-name">Name</label>
+                        <input id="p-name" required placeholder="e.g. e2e-linux"
+                            pattern="[a-z0-9]([\-a-z0-9]{0,55}[a-z0-9])?" maxlength="57">
+                        <span class="hint">Runs are named after it, e.g. <code>e2e-linux-x7k2p</code>.</span>
+                    </div>
+                    <div class="field">
+                        <label for="p-pipeline">Pipeline</label>
+                        <select id="p-pipeline" required></select>
+                        <span class="hint" id="p-pipeline-desc"></span>
+                    </div>
+                    <div class="field">
+                        <label for="p-machine">Machine</label>
+                        <select id="p-machine" required></select>
+                        <span class="hint">Held for the whole run.</span>
+                    </div>
+                    <div class="field">
+                        <label for="p-task-machine">Task machine</label>
+                        <select id="p-task-machine"></select>
+                        <span class="hint" id="p-task-hint">Optional.</span>
+                    </div>
+                </div>
+                <fieldset id="p-params-set">
+                    <legend>Parameters</legend>
+                    <div class="form-grid" id="p-params"></div>
+                </fieldset>
+                <fieldset id="p-ws-set">
+                    <legend>Workspaces</legend>
+                    <div class="form-grid" id="p-workspaces"></div>
+                </fieldset>
+                <details id="p-advanced">
+                    <summary>Service account and timeout</summary>
+                    <div class="form-grid">
+                        <div class="field">
+                            <label for="p-sa">Service account</label>
+                            <input id="p-sa" placeholder="the namespace default">
+                        </div>
+                        <div class="field">
+                            <label for="p-timeout">Timeout</label>
+                            <input id="p-timeout" placeholder="e.g. 3h or 1h30m">
+                        </div>
+                    </div>
+                </details>
+                <div class="form-actions">
+                    <button type="submit" class="primary" id="preset-save">Save preset</button>
+                    <button type="button" id="preset-cancel">Cancel</button>
+                </div>
+                <p id="preset-msg" class="msg" role="status" hidden></p>
+            </form>
+        </section>
+
         <section class="card">
             <h2>Log</h2>
             <pre id="log">{{ log_contents }}</pre>
@@ -364,6 +473,11 @@
         // machine check results by name, kept across refreshes until hidden or locked
         const checkResults = {};
         const checking = new Set();
+        const PRESETS_ENABLED = {{ presets_enabled | tojson }};
+        let presets = {{ presets | tojson }};
+        let pipelines = [];       // loaded when the preset editor opens
+        let editing = null;       // name of the preset in the editor, null for a new one
+        const starting = new Set();
 
         const $ = id => document.getElementById(id);
 
@@ -493,6 +607,228 @@
             }
         }
 
+        // ---------------- presets ----------------
+
+        function machinesOf(p) {
+            return p.task_machine ? `${p.machine} + ${p.task_machine}` : p.machine;
+        }
+
+        function renderPresets() {
+            const unlocked = API_ENABLED && !!token;
+            $("presets-disabled").hidden = PRESETS_ENABLED;
+            $("presets-wrap").hidden = !PRESETS_ENABLED;
+            $("new-preset-btn").hidden = !(PRESETS_ENABLED && unlocked);
+            $("presets-locked-hint").hidden = !(PRESETS_ENABLED && API_ENABLED && !unlocked);
+            $("preset-action-col").hidden = !unlocked;
+            if (!PRESETS_ENABLED) return;
+            const rows = Object.keys(presets).sort().map(name => {
+                const p = presets[name];
+                const row = el("tr", {},
+                    el("td", { className: "name" }, name, el("span", { className: "sub", textContent: `${p.pipeline} on ${machinesOf(p)}` })),
+                    el("td", { className: "name col-extra", textContent: p.pipeline }),
+                    el("td", { className: "name col-extra", textContent: machinesOf(p) }));
+                if (unlocked) {
+                    const start = el("button", {
+                        type: "button",
+                        className: "primary",
+                        textContent: starting.has(name) ? "Starting…" : "Start",
+                        disabled: starting.has(name),
+                        title: `Start ${p.pipeline} on ${machinesOf(p)}`,
+                    });
+                    start.addEventListener("click", () => startPreset(name));
+                    const edit = el("button", { type: "button", textContent: "Edit", title: `Edit preset ${name}` });
+                    edit.addEventListener("click", () => openPresetForm(name));
+                    const del = el("button", { type: "button", className: "danger", textContent: "Delete", title: `Delete preset ${name}` });
+                    del.addEventListener("click", () => deletePreset(name, del));
+                    row.append(el("td", { className: "actions" }, el("span", { className: "action-buttons" }, start, edit, del)));
+                }
+                return row;
+            });
+            if (!rows.length) {
+                rows.push(el("tr", {}, el("td", { className: "empty", colSpan: unlocked ? 4 : 3, textContent: "No presets yet." })));
+            }
+            $("presets").tBodies[0].replaceChildren(...rows);
+        }
+
+        function fillMachineSelect(select, current, optional) {
+            const names = Object.keys(machines).sort();
+            const options = names.map(n => el("option", { value: n, textContent: `${n} (${machines[n]})` }));
+            if (current && !names.includes(current)) {
+                options.unshift(el("option", { value: current, textContent: `${current} (not registered)` }));
+            }
+            if (optional) options.unshift(el("option", { value: "", textContent: "None" }));
+            select.replaceChildren(...options);
+            select.value = current || (optional ? "" : names[0] || "");
+        }
+
+        const WORKSPACE_TYPES = [
+            ["volumeClaimTemplate", "New volume each run", "size, e.g. 1Gi"],
+            ["persistentVolumeClaim", "Existing PVC", "PVC name"],
+            ["secret", "Secret", "secret name"],
+            ["configMap", "ConfigMap", "ConfigMap name"],
+            ["emptyDir", "Empty directory", null],
+        ];
+
+        function workspaceField(ws, saved) {
+            const select = el("select", { "ariaLabel": `${ws.name}: how to bind it` },
+                ...(ws.optional ? [el("option", { value: "", textContent: "Not bound" })] : []),
+                ...WORKSPACE_TYPES.map(([value, text]) => el("option", { value, textContent: text })));
+            select.value = saved?.type ?? (ws.optional ? "" : "volumeClaimTemplate");
+            const input = el("input", { value: saved?.value || "", "ariaLabel": `${ws.name}: value` });
+            const update = () => {
+                const placeholder = WORKSPACE_TYPES.find(([value]) => value === select.value)?.[2];
+                input.hidden = !placeholder;
+                input.required = !!placeholder;
+                input.placeholder = placeholder || "";
+            };
+            select.addEventListener("change", update);
+            update();
+            const field = el("div", { className: "field" },
+                el("span", { className: "label" }, ws.name, ws.optional ? el("span", { className: "req", textContent: " optional" }) : ""),
+                el("div", { className: "ws-row" }, select, input),
+                el("span", { className: "hint", textContent: ws.description }));
+            field.dataset.workspace = ws.name;
+            return field;
+        }
+
+        function paramField(param, saved) {
+            const required = param.default === null || param.default === undefined;
+            const input = el("input", { className: "param", required: required && param.type === "string" });
+            input.dataset.param = param.name;
+            if (param.type !== "string") {
+                input.disabled = true;
+                input.placeholder = `${param.type}, the pipeline's default is used`;
+            } else {
+                input.value = saved ?? "";
+                input.placeholder = required ? "required" : `default: ${param.default}`;
+            }
+            return el("label", { className: "field" },
+                el("span", { className: "label" }, param.name, required ? el("span", { className: "req", textContent: " required" }) : ""),
+                input,
+                el("span", { className: "hint", textContent: param.description }));
+        }
+
+        function renderPipelineFields() {
+            const saved = editing ? presets[editing] : null;
+            const pipeline = pipelines.find(p => p.name === $("p-pipeline").value);
+            $("p-pipeline-desc").textContent = pipeline?.description || "";
+            const params = pipeline?.params || [];
+            const workspaces = pipeline?.workspaces || [];
+            $("p-params-set").hidden = !params.length;
+            $("p-ws-set").hidden = !workspaces.length;
+            $("p-params").replaceChildren(...params.map(p => paramField(p, saved?.params?.[p.name])));
+            $("p-workspaces").replaceChildren(...workspaces.map(w => workspaceField(w, saved?.workspaces?.[w.name])));
+        }
+
+        async function openPresetForm(name) {
+            editing = name;
+            const saved = name ? presets[name] : null;
+            $("preset-form-title").textContent = name ? `Edit preset ${name}` : "New preset";
+            $("p-name").value = name || "";
+            $("p-name").readOnly = !!name;
+            $("p-sa").value = saved?.service_account || "";
+            $("p-timeout").value = saved?.timeout || "";
+            $("p-advanced").open = !!(saved?.service_account || saved?.timeout);
+            $("p-task-hint").textContent = LABEL_TASK ? `Optional, held until task ${LABEL_TASK} finishes.` : "Optional.";
+            fillMachineSelect($("p-machine"), saved?.machine, false);
+            fillMachineSelect($("p-task-machine"), saved?.task_machine, true);
+            $("preset-msg").hidden = true;
+            $("p-pipeline").replaceChildren(el("option", { value: "", textContent: "Loading pipelines…" }));
+            $("p-params").replaceChildren();
+            $("p-workspaces").replaceChildren();
+            $("preset-form").hidden = false;
+            $("preset-form").scrollIntoView({ block: "nearest" });
+            try {
+                pipelines = await api("GET", "/api/pipelines");
+            } catch (e) {
+                pipelines = [];
+                flash($("preset-msg"), `Couldn't load the pipelines: ${e.message}`, "error");
+            }
+            if (editing !== name || $("preset-form").hidden) return;  // closed or switched meanwhile
+            const options = pipelines.map(p => el("option", { value: p.name, textContent: p.name }));
+            if (saved && !pipelines.some(p => p.name === saved.pipeline)) {
+                options.unshift(el("option", { value: saved.pipeline, textContent: `${saved.pipeline} (no longer exists)` }));
+            }
+            if (!options.length) options.push(el("option", { value: "", textContent: "No pipelines in this namespace" }));
+            $("p-pipeline").replaceChildren(...options);
+            $("p-pipeline").value = saved?.pipeline || pipelines[0]?.name || "";
+            renderPipelineFields();
+            (name ? $("p-pipeline") : $("p-name")).focus();
+        }
+
+        function closePresetForm() {
+            editing = null;
+            $("preset-form").hidden = true;
+        }
+
+        $("p-pipeline").addEventListener("change", renderPipelineFields);
+        $("preset-cancel").addEventListener("click", closePresetForm);
+        $("new-preset-btn").addEventListener("click", () => openPresetForm(null));
+        $("presets-unlock").addEventListener("click", () => $("token-input").focus());
+
+        $("preset-form").addEventListener("submit", async ev => {
+            ev.preventDefault();
+            const name = editing || $("p-name").value.trim();
+            if (!editing && presets[name] && !confirm(`Preset ${name} already exists. Replace it?`)) return;
+            const body = {
+                pipeline: $("p-pipeline").value,
+                machine: $("p-machine").value,
+                task_machine: $("p-task-machine").value,
+                params: {},
+                workspaces: {},
+                service_account: $("p-sa").value.trim(),
+                timeout: $("p-timeout").value.trim(),
+            };
+            for (const input of $("p-params").querySelectorAll("input.param:not(:disabled)")) {
+                if (input.value.trim()) body.params[input.dataset.param] = input.value.trim();
+            }
+            for (const field of $("p-workspaces").querySelectorAll("[data-workspace]")) {
+                const type = field.querySelector("select").value;
+                if (type) body.workspaces[field.dataset.workspace] = { type, value: field.querySelector("input").value.trim() };
+            }
+            $("preset-save").disabled = true;
+            try {
+                await api("PUT", `/api/presets/${encodeURIComponent(name)}`, body);
+                closePresetForm();
+                flash($("presets-msg"), `Saved preset ${name}.`, "ok");
+                await refresh();
+            } catch (e) {
+                flash($("preset-msg"), e.message, "error");
+            } finally {
+                $("preset-save").disabled = false;
+            }
+        });
+
+        async function startPreset(name) {
+            starting.add(name);
+            renderPresets();
+            try {
+                const run = await api("POST", `/api/presets/${encodeURIComponent(name)}/start`);
+                const held = run.task_machine ? `${run.machine} and ${run.task_machine} are` : `${run.machine} is`;
+                flash($("presets-msg"), `Started ${run.pipelinerun}. It runs as soon as ${held} free.`, "ok");
+                await refresh();
+            } catch (e) {
+                flash($("presets-msg"), `Couldn't start ${name}: ${e.message}`, "error");
+            } finally {
+                starting.delete(name);
+                renderPresets();
+            }
+        }
+
+        async function deletePreset(name, btn) {
+            if (!confirm(`Delete preset ${name}?\n\nRuns it already started aren't affected.`)) return;
+            btn.disabled = true;
+            try {
+                await api("DELETE", `/api/presets/${encodeURIComponent(name)}`);
+                if (editing === name) closePresetForm();
+                flash($("presets-msg"), `Deleted preset ${name}.`, "ok");
+                await refresh();
+            } catch (e) {
+                flash($("presets-msg"), e.message, "error");
+                btn.disabled = false;
+            }
+        }
+
         function renderRuns() {
             const rows = runs.map(r => {
                 const until = r.until === "task" ? `task ${LABEL_TASK || ""} finishes` : "run finishes";
@@ -520,7 +856,9 @@
             $("add-fields").disabled = !unlocked;
             $("locked-hint").hidden = unlocked;
             if (!unlocked) $("add-msg").hidden = true;
+            if (!unlocked) closePresetForm();
             renderMachines();
+            renderPresets();
         }
 
         function lock() {
@@ -597,12 +935,14 @@
 
         async function refresh() {
             try {
-                [machines, runs] = await Promise.all([
+                [machines, runs, presets] = await Promise.all([
                     fetch("/api/machines").then(json),
                     fetch("/api/runs").then(json),
+                    PRESETS_ENABLED ? fetch("/api/presets").then(json) : {},
                 ]);
                 renderMachines();
                 renderRuns();
+                renderPresets();
                 $("updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
                 $("updated").classList.remove("stale");
             } catch {

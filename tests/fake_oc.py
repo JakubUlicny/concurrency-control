@@ -8,6 +8,7 @@ cluster call fails loudly instead of being silently ignored.
 import base64
 import copy
 import json
+import random
 import re
 import threading
 
@@ -15,6 +16,7 @@ import threading
 RESOURCES = {
     "configmap": "configmaps",
     "secret": "secrets",
+    "pipeline": "pipelines.tekton.dev",
     "pipelinerun": "pipelineruns.tekton.dev",
     "taskrun": "taskruns.tekton.dev",
 }
@@ -22,6 +24,9 @@ RESOURCES = {
 # what the API server accepts as an object name or a configmap key
 DNS1123_SUBDOMAIN = re.compile(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*")
 CONFIG_KEY = re.compile(r"[-._a-zA-Z0-9]+")
+
+# the characters the API server picks generateName suffixes from
+NAME_SUFFIX_CHARS = "bcdfghjklmnpqrstvwxz2456789"
 
 # Go's name for a JSON value it can't unmarshal into a string
 JSON_TYPES = [(bool, "bool"), ((int, float), "number"), (dict, "object"), (list, "array")]
@@ -82,6 +87,17 @@ class FakeCluster:
         data = {key: base64.b64decode(value).decode() for key, value in secret.get("data", {}).items()}
         return {"labels": secret["metadata"].get("labels") or {}, "data": data}
 
+    def add_pipeline(self, name: str, params=(), workspaces=(), description=""):
+        """A Pipeline; params are (name, default) or (name, default, type), default None means required;
+        workspaces are names, or (name, optional)."""
+        spec = {"description": description, "tasks": [{"name": "run", "taskRef": {"name": "run"}}]}
+        spec["params"] = [{"name": p[0], "type": p[2] if len(p) > 2 else "string",
+                           **({} if p[1] is None else {"default": p[1]}), "description": f"the {p[0]}"}
+                          for p in params]
+        spec["workspaces"] = [{"name": w, "optional": False} if isinstance(w, str) else {"name": w[0], "optional": w[1]}
+                              for w in workspaces]
+        self.add("pipeline", name, spec=spec)
+
     def add_pipelinerun(self, name: str, labels=None, pending=True):
         reason = "PipelineRunPending" if pending else "Running"
         self.add("pipelinerun", name, labels=labels,
@@ -116,6 +132,10 @@ class FakeCluster:
                 return self._set_data(args[3], args[4])
             if args == ("create", "-f", "-"):
                 return self._create(json.loads(input))
+            if args == ("create", "-f", "-", "-o", "json"):
+                return self._create_pipelinerun(json.loads(input))
+            if args[:2] == ("create", "configmap") and len(args) == 3:
+                return self._create_configmap(args[2])
             if args[0] == "delete" and len(args) == 3:
                 return self._delete(args[1], args[2])
             if args[0] == "patch" and len(args) == 6 and args[3:5] == ("--type=merge", "-p"):
@@ -178,6 +198,26 @@ class FakeCluster:
         self.add("secret", name, labels=manifest["metadata"].get("labels"),
                  type=manifest.get("type", "Opaque"), data=data)
         return 0, f"secret/{name} created\n", ""
+
+    def _create_configmap(self, name):
+        if name in self.objects["configmap"]:
+            return 1, "", f'error: failed to create configmap: configmaps "{name}" already exists\n'
+        self.add("configmap", name, data={})
+        return 0, f"configmap/{name} created\n", ""
+
+    def _create_pipelinerun(self, manifest):
+        assert manifest.get("kind") == "PipelineRun", "only PipelineRuns are created with -o json"
+        metadata = manifest["metadata"]
+        assert "generateName" in metadata and "name" not in metadata, "runs are created with generateName"
+        while True:
+            name = metadata["generateName"] + "".join(random.choice(NAME_SUFFIX_CHARS) for _ in range(5))
+            if name not in self.objects["pipelinerun"]:
+                break
+        # what Tekton reports for a run created pending
+        self.add("pipelinerun", name, labels=metadata.get("labels"), apiVersion=manifest["apiVersion"],
+                 spec=copy.deepcopy(manifest["spec"]),
+                 status={"conditions": [{"type": "Succeeded", "status": "Unknown", "reason": "PipelineRunPending"}]})
+        return 0, json.dumps(self.objects["pipelinerun"][name]), ""
 
     def _delete(self, kind, name):
         if name not in self.objects[kind]:

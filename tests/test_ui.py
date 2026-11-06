@@ -17,6 +17,7 @@ from werkzeug.serving import make_server
 
 import control
 import machines
+import presets as presets_module
 import web
 from fake_ssh import private_key
 
@@ -623,6 +624,293 @@ def test_check_results_on_a_phone(fake, fake_ssh, api_token, open_page, width):
     expect(page.locator(".check-head .problems")).to_have_text("1 problem")
     assert page.evaluate("document.documentElement.scrollWidth") <= width
     assert page.eval_on_selector("#machines", "t => t.closest('.table-wrap').scrollWidth <= t.closest('.table-wrap').clientWidth")
+
+
+# ---------------- pipeline presets ----------------
+
+PRESET_CM = "pipeline-presets"
+
+
+def add_pipeline_setup(fake):
+    fake.set_machine("linux-1", "free")
+    fake.set_machine("windows-11", "busy")
+    fake.add_pipeline("crc-e2e", description="CRC end-to-end tests",
+                      params=[("crc-version", None), ("bundle", "4.17"), ("tags", ["e2e"], "array")],
+                      workspaces=["source", ("cache", True)])
+
+
+def store_preset(fake, name, **fields):
+    preset = {"pipeline": "crc-e2e", "machine": "linux-1", "task_machine": "", "params": {"crc-version": "2.45.0"},
+              "workspaces": {"source": {"type": "volumeClaimTemplate", "value": "1Gi"}},
+              "service_account": "", "timeout": ""}
+    preset.update(fields)
+    if PRESET_CM not in fake.objects["configmap"]:
+        fake.add("configmap", PRESET_CM, data={})
+    fake.data(PRESET_CM)[name] = json.dumps(preset)
+
+
+def stored_presets(fake):
+    if PRESET_CM not in fake.objects["configmap"]:
+        return {}
+    return {k: json.loads(v) for k, v in fake.data(PRESET_CM).items()}
+
+
+def preset_button(page, name, label):
+    index = page.locator("#presets tbody tr").evaluate_all(
+        "(rows, name) => rows.findIndex(row => row.cells[0].firstChild.textContent === name)", name)
+    assert index >= 0, f"no row for preset {name}"
+    return page.locator("#presets tbody tr").nth(index).get_by_role("button", name=re.compile(f"^{label}"))
+
+
+def open_new_preset(page):
+    page.click("#new-preset-btn")
+    expect(page.locator("#p-pipeline option")).to_have_text(["crc-e2e"])
+
+
+def test_presets_are_listed_for_everyone(fake, api_token, open_page):
+    add_pipeline_setup(fake)
+    store_preset(fake, "e2e-linux")
+    store_preset(fake, "e2e-both", task_machine="windows-11")
+    page = open_page()
+    assert rows(page, "presets") == [["e2e-both", "crc-e2e", "linux-1 + windows-11"], ["e2e-linux", "crc-e2e", "linux-1"]]
+    expect(page.locator("#presets button")).to_have_count(0)
+    expect(page.locator("#new-preset-btn")).to_be_hidden()
+    expect(page.locator("#presets-locked-hint")).to_be_visible()
+
+
+def test_no_presets_yet(fake, api_token, open_page):
+    page = open_page(token=api_token)
+    assert rows(page, "presets") == [["No presets yet."]]
+
+
+def test_presets_are_off_without_preset_cm(fake, monkeypatch, open_page):
+    monkeypatch.setattr(presets_module, "PRESET_CM", None)
+    page = open_page()
+    expect(page.locator("#presets-disabled")).to_be_visible()
+    expect(page.locator("#presets-wrap")).to_be_hidden()
+
+
+def test_create_preset_from_the_pipeline_fields(fake, api_token, open_page):
+    add_pipeline_setup(fake)
+    page = open_page(token=api_token)
+    open_new_preset(page)
+    expect(page.locator("#p-pipeline-desc")).to_have_text("CRC end-to-end tests")
+    # parameters come from the pipeline, with its defaults
+    expect(page.locator("#p-params .label")).to_have_text(["crc-version required", "bundle", "tags"])
+    expect(page.locator('[data-param="crc-version"]')).to_have_attribute("placeholder", "required")
+    expect(page.locator('[data-param="bundle"]')).to_have_attribute("placeholder", "default: 4.17")
+    expect(page.locator('[data-param="tags"]')).to_be_disabled()
+    # a required workspace starts as a new volume, an optional one unbound
+    expect(page.locator('[data-workspace="source"] select')).to_have_value("volumeClaimTemplate")
+    expect(page.locator('[data-workspace="source"] input')).to_have_attribute("placeholder", "size, e.g. 1Gi")
+    expect(page.locator('[data-workspace="cache"] select')).to_have_value("")
+    expect(page.locator('[data-workspace="cache"] input')).to_be_hidden()
+    expect(page.locator("#p-machine option")).to_have_text(["linux-1 (free)", "windows-11 (busy)"])
+    expect(page.locator("#p-task-machine option")).to_have_text(["None", "linux-1 (free)", "windows-11 (busy)"])
+
+    page.fill("#p-name", "e2e-linux")
+    page.fill('[data-param="crc-version"]', "2.45.0")
+    page.fill('[data-workspace="source"] input', "1Gi")
+    page.click("#preset-save")
+    expect(page.locator("#presets-msg")).to_have_text("Saved preset e2e-linux.")
+    expect(page.locator("#preset-form")).to_be_hidden()
+    assert rows(page, "presets")[0][:3] == ["e2e-linux", "crc-e2e", "linux-1"]
+    assert stored_presets(fake) == {"e2e-linux": {
+        "pipeline": "crc-e2e", "machine": "linux-1", "task_machine": "", "params": {"crc-version": "2.45.0"},
+        "workspaces": {"source": {"type": "volumeClaimTemplate", "value": "1Gi"}},
+        "service_account": "", "timeout": ""}}
+
+
+def test_missing_required_value_is_stopped_before_sending(fake, api_token, open_page):
+    add_pipeline_setup(fake)
+    page = open_page(token=api_token)
+    open_new_preset(page)
+    page.fill("#p-name", "e2e-linux")
+    page.fill('[data-workspace="source"] input', "1Gi")
+    sent = []
+    page.on("request", lambda request: sent.append(request) if request.method == "PUT" else None)
+    page.click("#preset-save")
+    page.wait_for_timeout(300)
+    assert sent == [] and stored_presets(fake) == {}
+    assert not page.eval_on_selector("#preset-form", "form => form.checkValidity()")
+
+
+def test_server_refusal_is_shown_in_the_editor(fake, api_token, open_page):
+    add_pipeline_setup(fake)
+    page = open_page(token=api_token)
+    open_new_preset(page)
+    page.fill("#p-name", "e2e-linux")
+    page.fill('[data-param="crc-version"]', "2.45.0")
+    page.select_option('[data-workspace="source"] select', "secret")
+    page.fill('[data-workspace="source"] input', "Not_A_Name")
+    page.click("#preset-save")
+    expect(page.locator("#preset-msg")).to_have_text("workspace source: 'Not_A_Name' isn't a valid object name")
+    expect(page.locator("#preset-msg")).to_have_class("msg error")
+    expect(page.locator("#preset-form")).to_be_visible()
+
+
+def test_edit_preset_starts_from_its_values(fake, api_token, open_page):
+    add_pipeline_setup(fake)
+    store_preset(fake, "e2e-linux", params={"crc-version": "2.45.0", "bundle": "4.18"},
+                 workspaces={"source": {"type": "persistentVolumeClaim", "value": "crc-src"}, "cache": {"type": "emptyDir", "value": ""}},
+                 task_machine="windows-11", service_account="pipeline", timeout="3h")
+    page = open_page(token=api_token)
+    preset_button(page, "e2e-linux", "Edit").click()
+    expect(page.locator("#preset-form-title")).to_have_text("Edit preset e2e-linux")
+    expect(page.locator("#p-name")).to_have_value("e2e-linux")
+    expect(page.locator("#p-name")).to_have_attribute("readonly", "")
+    expect(page.locator('[data-param="bundle"]')).to_have_value("4.18")
+    expect(page.locator('[data-workspace="source"] select')).to_have_value("persistentVolumeClaim")
+    expect(page.locator('[data-workspace="source"] input')).to_have_value("crc-src")
+    expect(page.locator('[data-workspace="cache"] select')).to_have_value("emptyDir")
+    expect(page.locator("#p-task-machine")).to_have_value("windows-11")
+    expect(page.locator("#p-advanced")).to_have_attribute("open", "")
+    expect(page.locator("#p-sa")).to_have_value("pipeline")
+    page.fill('[data-param="crc-version"]', "2.46.0")
+    page.click("#preset-save")
+    expect(page.locator("#presets-msg")).to_have_text("Saved preset e2e-linux.")
+    assert stored_presets(fake)["e2e-linux"]["params"] == {"crc-version": "2.46.0", "bundle": "4.18"}
+    assert stored_presets(fake)["e2e-linux"]["timeout"] == "3h"
+
+
+def test_editing_a_preset_whose_pipeline_is_gone(fake, api_token, open_page):
+    add_pipeline_setup(fake)
+    store_preset(fake, "old", pipeline="crc-old")
+    page = open_page(token=api_token)
+    preset_button(page, "old", "Edit").click()
+    expect(page.locator("#p-pipeline option")).to_have_text(["crc-old (no longer exists)", "crc-e2e"])
+    page.select_option("#p-pipeline", "crc-e2e")
+    expect(page.locator('[data-param="crc-version"]')).to_be_visible()
+
+
+def test_switching_the_pipeline_switches_its_fields(fake, api_token, open_page):
+    add_pipeline_setup(fake)
+    fake.add_pipeline("crc-installer", params=[("installer-version", None)])
+    page = open_page(token=api_token)
+    page.click("#new-preset-btn")
+    expect(page.locator("#p-pipeline option")).to_have_text(["crc-e2e", "crc-installer"])
+    page.select_option("#p-pipeline", "crc-installer")
+    expect(page.locator("#p-params .label")).to_have_text(["installer-version required"])
+    expect(page.locator("#p-ws-set")).to_be_hidden()
+
+
+def test_new_preset_with_a_taken_name_asks_first(fake, api_token, open_page):
+    add_pipeline_setup(fake)
+    store_preset(fake, "e2e-linux", params={"crc-version": "1.0.0"})
+    page = open_page(token=api_token)
+    open_new_preset(page)
+    page.fill("#p-name", "e2e-linux")
+    page.fill('[data-param="crc-version"]', "2.45.0")
+    page.fill('[data-workspace="source"] input', "1Gi")
+    questions = []
+    page.on("dialog", lambda dialog: (questions.append(dialog.message), dialog.dismiss()))
+    page.click("#preset-save")
+    wait_until(page, lambda: questions)
+    assert questions == ["Preset e2e-linux already exists. Replace it?"]
+    assert stored_presets(fake)["e2e-linux"]["params"] == {"crc-version": "1.0.0"}
+
+
+def test_start_preset(fake, api_token, open_page):
+    add_pipeline_setup(fake)
+    store_preset(fake, "e2e-linux")
+    page = open_page(token=api_token)
+    held = []
+    page.route("**/start", lambda route: held.append(route))
+    preset_button(page, "e2e-linux", "Start").click()
+    expect(preset_button(page, "e2e-linux", "Start")).to_have_text("Starting…")
+    expect(preset_button(page, "e2e-linux", "Start")).to_be_disabled()
+    wait_until(page, lambda: held)
+    held[0].continue_()
+    expect(page.locator("#presets-msg")).to_have_text(re.compile(
+        r"^Started e2e-linux-[a-z0-9]{5}\. It runs as soon as linux-1 is free\.$"))
+    [run] = fake.objects["pipelinerun"].values()
+    assert run["metadata"]["labels"]["concurrency-control/preset"] == "e2e-linux"
+    assert run["spec"]["status"] == "PipelineRunPending"
+    expect(preset_button(page, "e2e-linux", "Start")).to_have_text("Start")
+
+
+def test_start_with_a_task_machine_names_both(fake, api_token, open_page):
+    add_pipeline_setup(fake)
+    store_preset(fake, "both", task_machine="windows-11")
+    page = open_page(token=api_token)
+    preset_button(page, "both", "Start").click()
+    expect(page.locator("#presets-msg")).to_contain_text("It runs as soon as linux-1 and windows-11 are free.")
+
+
+def test_start_that_no_longer_fits_is_explained(fake, api_token, open_page):
+    add_pipeline_setup(fake)
+    store_preset(fake, "e2e-linux", machine="mac-9")
+    page = open_page(token=api_token)
+    preset_button(page, "e2e-linux", "Start").click()
+    expect(page.locator("#presets-msg")).to_have_text(
+        "Couldn't start e2e-linux: preset e2e-linux no longer fits: machine mac-9 isn't registered, edit it first")
+    expect(page.locator("#presets-msg")).to_have_class("msg error")
+    assert fake.objects["pipelinerun"] == {}
+
+
+def test_delete_preset(fake, api_token, open_page):
+    add_pipeline_setup(fake)
+    store_preset(fake, "a")
+    store_preset(fake, "b")
+    page = open_page(token=api_token)
+    questions = []
+    page.on("dialog", lambda dialog: (questions.append(dialog.message), dialog.accept()))
+    preset_button(page, "a", "Delete").click()
+    expect(page.locator("#presets-msg")).to_have_text("Deleted preset a.")
+    assert [r[0] for r in rows(page, "presets")] == ["b"]
+    assert questions[0].startswith("Delete preset a?")
+    assert list(stored_presets(fake)) == ["b"]
+
+
+def test_cancelled_delete_keeps_the_preset(fake, api_token, open_page):
+    add_pipeline_setup(fake)
+    store_preset(fake, "a")
+    page = open_page(token=api_token)
+    page.on("dialog", lambda dialog: dialog.dismiss())
+    preset_button(page, "a", "Delete").click()
+    page.wait_for_timeout(300)
+    assert list(stored_presets(fake)) == ["a"]
+
+
+def test_cancel_and_lock_close_the_editor(fake, api_token, open_page):
+    add_pipeline_setup(fake)
+    page = open_page(token=api_token)
+    open_new_preset(page)
+    page.click("#preset-cancel")
+    expect(page.locator("#preset-form")).to_be_hidden()
+    open_new_preset(page)
+    page.click("#lock-btn")
+    expect(page.locator("#preset-form")).to_be_hidden()
+    expect(page.locator("#new-preset-btn")).to_be_hidden()
+
+
+def test_unreadable_pipelines_are_explained_in_the_editor(fake, api_token, open_page):
+    add_pipeline_setup(fake)
+    fake.fail("get", "pipeline", stderr="Error from server (Forbidden)")
+    page = open_page(token=api_token)
+    page.click("#new-preset-btn")
+    expect(page.locator("#preset-msg")).to_have_text("Couldn't load the pipelines: can't read the pipelines from the cluster")
+    expect(page.locator("#p-pipeline option")).to_have_text(["No pipelines in this namespace"])
+
+
+def test_presets_refresh_every_10_seconds(fake, api_token, open_page):
+    add_pipeline_setup(fake)
+    page = open_page(token=api_token)
+    store_preset(fake, "added-elsewhere")
+    advance_to_refresh(page)
+    assert rows(page, "presets")[0][0] == "added-elsewhere"
+
+
+@pytest.mark.parametrize("width", [320, 390])
+def test_presets_on_a_phone(fake, api_token, open_page, width):
+    add_pipeline_setup(fake)
+    store_preset(fake, "e2e-linux-arm64", task_machine="windows-11")
+    page = open_page(token=api_token, viewport={"width": width, "height": 800})
+    expect(page.locator("#presets .sub")).to_have_text("crc-e2e on linux-1 + windows-11")
+    open_new_preset(page)
+    page.select_option('[data-workspace="cache"] select', "persistentVolumeClaim")
+    assert page.evaluate("document.documentElement.scrollWidth") <= width
+    assert page.eval_on_selector("#presets", "t => t.closest('.table-wrap').scrollWidth <= t.closest('.table-wrap').clientWidth")
 
 
 # ---------------- staying current ----------------

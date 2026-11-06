@@ -37,7 +37,26 @@ def remove_configmap_key(name: str, key: str):
         logger.error(f"failed to remove {key} from configmap {name}: {err.strip()}")
     return code == 0
 
+def create_configmap(name: str):
+    code, _, err = oc("create", "configmap", name)
+    if code != 0:
+        logger.error(f"failed to create configmap {name}: {err.strip()}")
+    return code == 0
+
 # ---------------- tekton ----------------
+
+def list_pipelines():
+    # None when the list can't be read, so callers can tell that apart from "no pipelines"
+    pipelines = get_json("pipeline")
+    return None if pipelines is None else pipelines.get("items", [])
+
+def create_pipelinerun(manifest: dict):
+    # -o json returns the created object, which holds the name generateName picked
+    code, out, err = oc("create", "-f", "-", "-o", "json", input=json.dumps(manifest))
+    if code != 0:
+        logger.error(f"failed to create pipelinerun: {err.strip()}")
+        return None, err.strip()
+    return json.loads(out)["metadata"]["name"], ""
 
 def get_pipelinerun(name: str):
     return get_json("pipelinerun", name)
