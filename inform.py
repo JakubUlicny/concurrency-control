@@ -4,6 +4,10 @@ import io
 import os
 import machines
 
+def load_key(keypath: str):
+    # any key type ssh-keygen makes (RSA, ECDSA, Ed25519), not only RSA
+    return paramiko.PKey.from_path(keypath)
+
 def get_machine_secret(secret_name:str):
     # machines added through the API have no mounted secret, read it from the cluster
     if not os.path.isdir(f"/opt/{secret_name}"):
@@ -45,7 +49,7 @@ def set_remote_motd(host, user, keypath, message, os_type='linux'):
     try:
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        private_key = paramiko.RSAKey.from_private_key_file(keypath)
+        private_key = load_key(keypath)
         ssh.connect(host, username=user, pkey=private_key)   
     except Exception as e:
         print(f"Unexpected error ssh to {host}: {e}")
@@ -100,7 +104,7 @@ def clear_remote_motd(host, user, keypath,os_type='linux'):
         MOTD_FILE_PATH = "/etc/motd"
 
     try:
-        private_key = paramiko.RSAKey.from_private_key_file(keypath)
+        private_key = load_key(keypath)
         ssh.connect(host, username=user, pkey=private_key)
     except Exception as e:
         print(f"Error clear motd for {host}: {e}")

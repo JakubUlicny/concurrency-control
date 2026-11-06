@@ -52,6 +52,20 @@ The controller picks the MOTD variant from the machine name: any name containing
   - `dotnet` (the Windows installer build)
   - Git Bash (Windows)
 
+### Checking a machine
+
+**Check** next to a machine in the web UI, after unlocking, logs in to it over
+SSH and lists what it has and what's missing: whether the secret and key can be
+read, whether login works, whether the host matches its name (Linux or Git
+Bash), and the tools above with their versions. It runs only when you click
+it. The commands only read, so it's safe on a busy machine too.
+
+The commands run in a non-interactive SSH session, the same kind the pipelines
+use. A tool that's only on the `PATH` of a login shell shows up as missing.
+To change the list, edit `COMMON`, `LINUX` and `WINDOWS` in `checks.py`.
+
+Any key type that `ssh-keygen` makes works: RSA, ECDSA or Ed25519.
+
 ### Adding a machine manually
 
 ```sh
@@ -109,6 +123,9 @@ jq -n --arg key "$(cat id_rsa)" \
   '{name: "<machine>", host: "<host>", username: "<user>", private_key: $key}' |
 curl -X POST -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' \
   -d @- http://<controller>:8080/api/machines
+
+# check what a machine has and what's missing (logs in over SSH)
+curl -X POST -H "Authorization: Bearer $API_TOKEN" http://<controller>:8080/api/machines/<machine>/check
 
 # remove a machine (409 while it is busy)
 curl -X DELETE -H "Authorization: Bearer $API_TOKEN" http://<controller>:8080/api/machines/<machine>

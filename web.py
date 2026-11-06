@@ -2,6 +2,7 @@ import hmac
 import os
 from functools import wraps
 from flask import Flask, render_template, jsonify, request
+import checks
 import configmap
 import machines
 import log
@@ -70,6 +71,12 @@ def add_machine():
     name = body.get("name")
     machines.add_machine(name, body.get("host"), body.get("username"), body.get("private_key"))
     return jsonify(name=name, status="free"), 201
+
+@app.route('/api/machines/<name>/check', methods=['POST'])
+@require_token
+def check_machine(name):
+    # needs the token: it makes the controller SSH out, and the answer shows the host
+    return jsonify(checks.check_machine(name))
 
 @app.route('/api/machines/<name>', methods=['DELETE'])
 @require_token

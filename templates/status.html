@@ -116,6 +116,24 @@
         tr:last-child td { border-bottom: 0; }
         td.name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; white-space: nowrap; }
         td.actions { text-align: right; white-space: nowrap; }
+        .action-buttons { display: inline-flex; gap: 6px; }
+
+        /* machine check results, in a row under the machine */
+        tr.has-check td { border-bottom: 0; }
+        tr.check-row td { padding-top: 0; }
+        .check-box { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+        .check-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 13px; margin-bottom: 6px; }
+        .check-head .problems { color: var(--danger); font-weight: 600; }
+        .check-head .all-ok { color: var(--free-fg); font-weight: 600; }
+        .check-head button.link { margin-left: auto; }
+        .check-list { display: grid; grid-template-columns: auto auto 1fr; gap: 3px 10px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
+        .check-list li { display: contents; }
+        .check-list .icon { font-weight: 700; }
+        .check-list .ok .icon { color: var(--free-fg); }
+        .check-list .fail .icon { color: var(--danger); }
+        .check-list .fail .item { font-weight: 600; }
+        .check-list .detail { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow-wrap: anywhere; }
+        .check-list .fail .detail { color: var(--danger); }
         td.empty { color: var(--muted); text-align: center; padding: 20px; }
 
         /* on narrow screens the secondary column folds into a line under the name */
@@ -128,6 +146,9 @@
             th, td { padding: 8px 6px; }
             td.name { font-size: 13px; }
             td.actions button { padding: 4px 10px; font-size: 13px; }
+            .action-buttons { flex-direction: column; }
+            .check-list { grid-template-columns: auto 1fr; }
+            .check-list .detail { grid-column: 2; margin-bottom: 4px; }
         }
 
         .badge {
@@ -340,6 +361,9 @@
         let machines = {{ machines | tojson }};
         let runs = {{ runs | tojson }};
         let token = loadToken();
+        // machine check results by name, kept across refreshes until hidden or locked
+        const checkResults = {};
+        const checking = new Set();
 
         const $ = id => document.getElementById(id);
 
@@ -394,31 +418,79 @@
             const unlocked = API_ENABLED && !!token;
             const names = Object.keys(machines).sort();
             $("action-col").hidden = !unlocked;
-            const rows = names.map(name => {
+            const rows = names.flatMap(name => {
                 const status = machines[name];
                 const users = runs.filter(r => r.machine === name).map(r => r.pipelinerun).join(", ");
                 const row = el("tr", {},
                     el("td", { className: "name" }, name, users ? el("span", { className: "sub", textContent: users }) : ""),
                     el("td", {}, badge(status)),
                     el("td", { className: "muted col-extra", textContent: users || "—" }));
-                if (unlocked) {
-                    const busy = status === "busy";
-                    const btn = el("button", {
-                        type: "button",
-                        className: "danger",
-                        textContent: "Remove",
-                        disabled: busy,
-                        title: busy ? "A busy machine can't be removed. Wait until its run finishes." : `Remove ${name}`,
-                    });
-                    btn.addEventListener("click", () => removeMachine(name, btn));
-                    row.append(el("td", { className: "actions" }, btn));
-                }
-                return row;
+                if (!unlocked) return [row];
+
+                const busy = status === "busy";
+                const remove = el("button", {
+                    type: "button",
+                    className: "danger",
+                    textContent: "Remove",
+                    disabled: busy,
+                    title: busy ? "A busy machine can't be removed. Wait until its run finishes." : `Remove ${name}`,
+                });
+                remove.addEventListener("click", () => removeMachine(name, remove));
+                const check = el("button", {
+                    type: "button",
+                    textContent: checking.has(name) ? "Checking…" : "Check",
+                    disabled: checking.has(name),
+                    title: `Log in to ${name} and list what it has and what's missing`,
+                });
+                check.addEventListener("click", () => checkMachine(name));
+                row.append(el("td", { className: "actions" }, el("span", { className: "action-buttons" }, check, remove)));
+
+                const details = checkDetails(name);
+                if (!details) return [row];
+                row.classList.add("has-check");
+                return [row, el("tr", { className: "check-row" }, el("td", { colSpan: 4 }, details))];
             });
             if (!rows.length) {
                 rows.push(el("tr", {}, el("td", { className: "empty", colSpan: unlocked ? 4 : 3, textContent: "No machines registered yet." })));
             }
             $("machines").tBodies[0].replaceChildren(...rows);
+        }
+
+        function checkDetails(name) {
+            const data = checkResults[name];
+            if (!data) {
+                return checking.has(name)
+                    ? el("div", { className: "check-box muted small", textContent: `Logging in to ${name}…` })
+                    : null;
+            }
+            const problems = data.results.filter(r => !r.ok).length;
+            const hide = el("button", { type: "button", className: "link", textContent: "Hide" });
+            hide.addEventListener("click", () => { delete checkResults[name]; renderMachines(); });
+            const head = el("div", { className: "check-head", role: "status" },
+                el("span", problems
+                    ? { className: "problems", textContent: problems === 1 ? "1 problem" : `${problems} problems` }
+                    : { className: "all-ok", textContent: "Everything is in place" }),
+                el("span", { className: "muted", textContent: checking.has(name) ? "checking again…" : `checked ${new Date(data.checked_at).toLocaleTimeString()}` }),
+                hide);
+            const list = el("ul", { className: "check-list" }, ...data.results.map(r =>
+                el("li", { className: r.ok ? "ok" : "fail" },
+                    el("span", { className: "icon", textContent: r.ok ? "✓" : "✗", ariaLabel: r.ok ? "ok" : "problem" }),
+                    el("span", { className: "item", textContent: r.name }),
+                    el("span", { className: "detail", textContent: r.detail }))));
+            return el("div", { className: "check-box" }, head, list);
+        }
+
+        async function checkMachine(name) {
+            checking.add(name);
+            renderMachines();
+            try {
+                checkResults[name] = await api("POST", `/api/machines/${encodeURIComponent(name)}/check`);
+            } catch (e) {
+                flash($("machines-msg"), `Couldn't check ${name}: ${e.message}`, "error");
+            } finally {
+                checking.delete(name);
+                renderMachines();
+            }
         }
 
         function renderRuns() {
@@ -454,6 +526,7 @@
         function lock() {
             token = null;
             saveToken(null);
+            for (const name in checkResults) delete checkResults[name];
             renderAuth();
         }
 

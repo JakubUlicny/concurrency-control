@@ -4,7 +4,7 @@
   outside a test cluster.oc raises;
 * running oc, kubectl or tkn raises, and KUBECONFIG points at an empty file
   in case a call slips past that;
-* paramiko can't open connections;
+* paramiko can't open connections, and machine checks run against FakeSSH;
 * log.py writes to a temp dir, because /var/log/app only exists in the image.
 """
 import os
@@ -49,11 +49,14 @@ def load_log_module():
 
 log = load_log_module()
 
+import checks  # noqa: E402
 import cluster  # noqa: E402
 import inform  # noqa: E402
+import machines  # noqa: E402
 import paramiko  # noqa: E402
 import web  # noqa: E402
 from fake_oc import FakeCluster  # noqa: E402
+from fake_ssh import FakeSSH  # noqa: E402
 
 TOKEN = "s3cret-token"
 
@@ -123,6 +126,16 @@ def log_file():
 def api_token(monkeypatch):
     monkeypatch.setattr(web, "API_TOKEN", TOKEN)
     return TOKEN
+
+
+@pytest.fixture
+def fake_ssh(monkeypatch, tmp_path):
+    """Lets machine checks run: SSH sessions answer from fake_ssh.answers instead of a real machine."""
+    ssh = FakeSSH()
+    monkeypatch.setattr(checks, "Session", ssh.session)
+    # secrets read from the cluster are written out as key files; keep them in the test's temp dir
+    monkeypatch.setattr(machines, "KEY_CACHE_DIR", str(tmp_path / "keys"))
+    return ssh
 
 
 @pytest.fixture

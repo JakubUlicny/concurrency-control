@@ -18,6 +18,7 @@ from werkzeug.serving import make_server
 import control
 import machines
 import web
+from fake_ssh import private_key
 
 pytestmark = pytest.mark.ui
 
@@ -300,7 +301,7 @@ def test_add_machine(fake, api_token, open_page):
         "Added linux-arm64-1. Pipelines can use it once they name it in their machine label.")
     expect(page.locator("#add-msg")).to_have_class("msg ok")
     expect(page.locator("#machines td.name")).to_have_text(["linux-arm64-1"])
-    assert rows(page, "machines") == [["linux-arm64-1", "free", "—", "Remove"]]
+    assert rows(page, "machines") == [["linux-arm64-1", "free", "—", "Check\nRemove"]]
     for field in ("#f-name", "#f-host", "#f-user", "#f-key"):
         expect(page.locator(field)).to_have_value("")
     assert fake.secret("linux-arm64-1")["data"] == {"host": "10.0.0.5", "username": "crcqe", "id_rsa": KEY}
@@ -472,6 +473,156 @@ def test_machine_held_by_a_run_cannot_be_removed(fake, api_token, open_page):
     fake.set_holds(runs=[("run-a", "linux-1")])
     page = open_page(token=api_token)
     expect(remove_button(page, "linux-1")).to_be_disabled(timeout=1_000)
+
+
+# ---------------- checking machines ----------------
+
+def add_reachable_machine(fake, name="linux-1", status="free"):
+    fake.set_machine(name, status)
+    fake.add_secret(name, host="10.0.0.5", username="crcqe", id_rsa=private_key())
+
+
+def check_button(page, name):
+    return machine_row(page, name).get_by_role("button", name=re.compile("^Check"))
+
+
+def check_items(page):
+    """(icon, item, detail) of each line in the open check results."""
+    return page.locator(".check-list li").evaluate_all(
+        "items => items.map(li => [...li.children].map(span => span.textContent))")
+
+
+def test_check_needs_unlocking(fake, api_token, open_page):
+    add_reachable_machine(fake)
+    page = open_page()
+    expect(page.get_by_role("button", name="Check")).to_have_count(0)
+    unlock(page, api_token)
+    expect(check_button(page, "linux-1")).to_be_visible()
+
+
+def test_check_lists_what_the_machine_has_and_what_is_missing(fake, fake_ssh, api_token, open_page):
+    add_reachable_machine(fake)
+    del fake_ssh.answers["go version"]
+    page = open_page(token=api_token)
+    check_button(page, "linux-1").click()
+    expect(page.locator(".check-head .problems")).to_have_text("1 problem")
+    assert check_items(page) == [
+        ["✓", "credentials", "crcqe@10.0.0.5"],
+        ["✓", "SSH key", "ssh-ed25519"],
+        ["✓", "SSH login", "connected"],
+        ["✓", "Linux shell", "Linux"],
+        ["✓", "git", "git version 2.45.1"],
+        ["✓", "make", "GNU Make 4.4.1"],
+        ["✗", "go", "not found"],
+        ["✓", "passwordless sudo", "ok"],
+    ]
+    expect(page.locator(".check-list li.fail")).to_have_count(1)
+    expect(page.locator(".check-head")).to_contain_text("checked ")
+
+
+def test_check_of_a_healthy_machine(fake, fake_ssh, api_token, open_page):
+    add_reachable_machine(fake)
+    page = open_page(token=api_token)
+    check_button(page, "linux-1").click()
+    expect(page.locator(".check-head .all-ok")).to_have_text("Everything is in place")
+    expect(page.locator(".check-list li.fail")).to_have_count(0)
+
+
+def test_check_results_sit_under_their_machine(fake, fake_ssh, api_token, open_page):
+    add_reachable_machine(fake, "linux-1")
+    add_reachable_machine(fake, "mac-1")
+    page = open_page(token=api_token)
+    check_button(page, "linux-1").click()
+    expect(page.locator(".check-row")).to_have_count(1)
+    order = page.locator("#machines tbody tr").evaluate_all(
+        "rows => rows.map(row => row.classList.contains('check-row') ? 'results' : row.cells[0].firstChild.textContent)")
+    assert order == ["linux-1", "results", "mac-1"]
+
+
+def test_check_button_waits_for_the_answer(fake, fake_ssh, api_token, open_page):
+    add_reachable_machine(fake)
+    page = open_page(token=api_token)
+    held = []
+    page.route("**/check", lambda route: held.append(route))
+    check_button(page, "linux-1").click()
+    expect(check_button(page, "linux-1")).to_have_text("Checking…")
+    expect(check_button(page, "linux-1")).to_be_disabled()
+    expect(page.locator(".check-row")).to_have_text("Logging in to linux-1…")
+    wait_until(page, lambda: held)
+    advance_to_refresh(page)  # a refresh meanwhile keeps the waiting state
+    expect(check_button(page, "linux-1")).to_have_text("Checking…")
+    held[0].continue_()
+    expect(page.locator(".check-head .all-ok")).to_be_visible()
+    expect(check_button(page, "linux-1")).to_have_text("Check")
+    expect(check_button(page, "linux-1")).to_be_enabled()
+
+
+def test_check_works_on_a_busy_machine(fake, fake_ssh, api_token, open_page):
+    # it only reads, so it doesn't disturb the run
+    add_reachable_machine(fake, status="busy")
+    page = open_page(token=api_token)
+    expect(check_button(page, "linux-1")).to_be_enabled()
+    check_button(page, "linux-1").click()
+    expect(page.locator(".check-head .all-ok")).to_be_visible()
+
+
+def test_check_results_stay_through_the_refresh(fake, fake_ssh, api_token, open_page):
+    add_reachable_machine(fake)
+    page = open_page(token=api_token)
+    check_button(page, "linux-1").click()
+    expect(page.locator(".check-row")).to_be_visible()
+    advance_to_refresh(page)
+    expect(page.locator(".check-row")).to_be_visible()
+
+
+def test_hide_closes_the_check_results(fake, fake_ssh, api_token, open_page):
+    add_reachable_machine(fake)
+    page = open_page(token=api_token)
+    check_button(page, "linux-1").click()
+    page.locator(".check-head").get_by_role("button", name="Hide").click()
+    expect(page.locator(".check-row")).to_have_count(0)
+
+
+def test_lock_clears_the_check_results(fake, fake_ssh, api_token, open_page):
+    add_reachable_machine(fake)
+    page = open_page(token=api_token)
+    check_button(page, "linux-1").click()
+    expect(page.locator(".check-row")).to_be_visible()
+    page.click("#lock-btn")
+    expect(page.locator(".check-row")).to_have_count(0)
+    unlock(page, api_token)
+    expect(page.locator(".check-row")).to_have_count(0)
+
+
+def test_failed_check_request_is_explained(fake, api_token, open_page):
+    add_reachable_machine(fake)
+    page = open_page(token=api_token)
+    page.route("**/check", lambda route: route.fulfill(status=500, json={"error": "boom"}))
+    check_button(page, "linux-1").click()
+    expect(page.locator("#machines-msg")).to_have_text("Couldn't check linux-1: boom")
+    expect(page.locator("#machines-msg")).to_have_class("msg error")
+    expect(page.locator(".check-row")).to_have_count(0)
+    expect(check_button(page, "linux-1")).to_be_enabled()
+
+
+def test_check_details_are_shown_as_text(fake, fake_ssh, api_token, open_page):
+    add_reachable_machine(fake)
+    fake_ssh.answers["git --version"] = (0, "<img src=x onerror=alert(1)>\n", "")
+    page = open_page(token=api_token)
+    check_button(page, "linux-1").click()
+    expect(page.locator(".check-list")).to_contain_text("<img src=x onerror=alert(1)>")
+    expect(page.locator(".check-list img")).to_have_count(0)
+
+
+@pytest.mark.parametrize("width", [320, 390])
+def test_check_results_on_a_phone(fake, fake_ssh, api_token, open_page, width):
+    add_reachable_machine(fake, "linux-arm64-1")
+    fake_ssh.answers["sudo -n true && echo ok"] = (1, "", "sudo: a password is required\n")
+    page = open_page(token=api_token, viewport={"width": width, "height": 800})
+    check_button(page, "linux-arm64-1").click()
+    expect(page.locator(".check-head .problems")).to_have_text("1 problem")
+    assert page.evaluate("document.documentElement.scrollWidth") <= width
+    assert page.eval_on_selector("#machines", "t => t.closest('.table-wrap').scrollWidth <= t.closest('.table-wrap').clientWidth")
 
 
 # ---------------- staying current ----------------

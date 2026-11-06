@@ -149,7 +149,8 @@ def test_unreadable_machine_list_is_an_error_not_an_empty_list(client, fake):
 
 # ---------------- authentication ----------------
 
-WRITES = [("GET", "/api/token-check"), ("POST", "/api/machines"), ("DELETE", "/api/machines/linux-1")]
+WRITES = [("GET", "/api/token-check"), ("POST", "/api/machines"), ("DELETE", "/api/machines/linux-1"),
+          ("POST", "/api/machines/linux-1/check")]
 
 
 @pytest.mark.parametrize("method,path", WRITES)
