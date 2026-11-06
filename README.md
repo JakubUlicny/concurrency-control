@@ -85,6 +85,17 @@ Then point the pipelines at the new machine through the
 4. **Update the pipelines** that reference the machine. While they still do,
    their runs stay `Pending` forever and the controller logs a warning.
 
+### Web UI
+
+The dashboard on port 8080 can also add and remove machines. Click **Unlock**
+and enter `API_TOKEN`. The token is kept for the browser tab only. You can then
+fill in the **Add machine** form, or use **Remove** next to a machine. Busy
+machines can't be removed. Without `API_TOKEN` on the controller the page is
+read-only.
+
+If the controller has no Route, reach the page with
+`oc port-forward <controller-pod> 8080` and open <http://localhost:8080>.
+
 ### Machine API
 
 `GET` is open. `POST` and `DELETE` need `Authorization: Bearer $API_TOKEN`.
@@ -107,3 +118,21 @@ Machine names must be DNS-1123 labels: lowercase letters, digits and `-`.
 `DELETE` only removes a secret that the API created. Mounted secrets are left
 alone because the Deployment owns them. The service account needs `create`,
 `get`, `patch` and `delete` on secrets for these endpoints.
+
+## Tests
+
+The tests run against an in-memory fake of `oc` and never touch a real
+cluster or machine.
+
+```sh
+pip install -r requirements-dev.txt
+python -m pytest                     # API and browser tests, in the installed Google Chrome
+python -m pytest tests/test_api.py   # API tests only, no browser needed
+```
+
+Without Google Chrome, run `python -m playwright install chromium` once and pass
+`--browser chromium`. `--browser` also takes `firefox` and `webkit` and can be
+repeated.
+
+Tests marked `xfail` describe known bugs. Once a fix makes one pass, pytest
+reports it as a failure so that the marker gets removed.

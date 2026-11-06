@@ -7,6 +7,7 @@ import machines
 import log
 
 API_TOKEN = os.environ.get("API_TOKEN")
+LABEL_TASK = os.environ.get("LABEL_TASK")
 
 app = Flask(__name__)
 
@@ -17,6 +18,12 @@ def get_log_contents():
             return ''.join(lines[-100:])
     except FileNotFoundError:
         return "Log file not found."
+
+def get_runs():
+    # "until" says what releases the machine: the whole run or the LABEL_TASK task
+    runs = [{"pipelinerun": r, "machine": m, "until": "run"} for r, m in configmap.get_wait_finish_runs() or []]
+    runs += [{"pipelinerun": r, "machine": m, "until": "task"} for r, m in configmap.get_wait_finish_task() or []]
+    return runs
 
 def require_token(f):
     @wraps(f)
@@ -35,10 +42,8 @@ def handle_machine_error(e):
 
 @app.route('/')
 def machine_status():
-    statuses = configmap.get_all_machine_statuses()
-    wait_finish_runs = configmap.get_wait_finish_runs() or []
-    log_contents = get_log_contents()
-    return render_template('status.html', statuses=statuses, wait_finish_runs=wait_finish_runs, log_contents=log_contents)
+    return render_template('status.html', machines=machines.list_machines(), runs=get_runs(),
+                           log_contents=get_log_contents(), api_enabled=bool(API_TOKEN), label_task=LABEL_TASK)
 
 @app.route('/log')
 def log_data():
@@ -47,6 +52,16 @@ def log_data():
 @app.route('/api/machines', methods=['GET'])
 def list_machines():
     return jsonify(machines.list_machines())
+
+@app.route('/api/runs', methods=['GET'])
+def list_runs():
+    return jsonify(get_runs())
+
+@app.route('/api/token-check', methods=['GET'])
+@require_token
+def token_check():
+    # lets the web UI tell a wrong token apart before the user fills the form
+    return "", 204
 
 @app.route('/api/machines', methods=['POST'])
 @require_token

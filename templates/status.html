@@ -1,55 +1,560 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
-    <title>Machine Status</title>
-    <meta http-equiv="refresh" content="30">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Test Machines</title>
+    <style>
+        :root {
+            --bg: #f5f6f8;
+            --surface: #ffffff;
+            --text: #1c2230;
+            --muted: #5f6878;
+            --border: #dde1e7;
+            --accent: #2456d3;
+            --accent-text: #ffffff;
+            --free-bg: #e2f3e7;
+            --free-fg: #1b6a33;
+            --busy-bg: #fcefd8;
+            --busy-fg: #865100;
+            --other-bg: #eceef2;
+            --other-fg: #4a5262;
+            --danger: #bf3129;
+            --danger-bg: #fbe5e4;
+            --ok-bg: #e2f3e7;
+            --ok-fg: #1b6a33;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #13161b;
+                --surface: #1c2027;
+                --text: #e5e8ed;
+                --muted: #98a1b0;
+                --border: #2e343e;
+                --accent: #6d94ff;
+                --accent-text: #0c1120;
+                --free-bg: #16321f;
+                --free-fg: #80d69b;
+                --busy-bg: #39290f;
+                --busy-fg: #f1c26c;
+                --other-bg: #2a2f38;
+                --other-fg: #b5bdcb;
+                --danger: #ff7b73;
+                --danger-bg: #3a1b1a;
+                --ok-bg: #16321f;
+                --ok-fg: #80d69b;
+            }
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+
+        header {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 24px 16px 8px;
+        }
+
+        h1 { margin: 0; font-size: 22px; }
+        h2 { margin: 0 0 12px; font-size: 16px; }
+
+        main {
+            display: grid;
+            gap: 16px;
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 8px 16px 32px;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 16px;
+            min-width: 0;
+        }
+
+        .card.locked { background: transparent; border-style: dashed; }
+        .card.locked h2 { margin-bottom: 4px; color: var(--muted); }
+        .card.locked p { margin: 0; }
+
+        .card-head {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .muted { color: var(--muted); }
+        .small { font-size: 13px; }
+
+        .table-wrap { overflow-x: auto; }
+
+        table { width: 100%; border-collapse: collapse; }
+
+        th, td {
+            text-align: left;
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--border);
+            vertical-align: middle;
+        }
+
+        th { font-size: 13px; font-weight: 600; color: var(--muted); }
+        tr:last-child td { border-bottom: 0; }
+        td.name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; white-space: nowrap; }
+        td.actions { text-align: right; white-space: nowrap; }
+        td.empty { color: var(--muted); text-align: center; padding: 20px; }
+
+        /* on narrow screens the secondary column folds into a line under the name */
+        .sub { display: none; font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--muted); white-space: normal; }
+
+        @media (max-width: 600px) {
+            .col-extra { display: none; }
+            .sub { display: block; }
+            .card { padding: 12px; }
+            th, td { padding: 8px 6px; }
+            td.name { font-size: 13px; }
+            td.actions button { padding: 4px 10px; font-size: 13px; }
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 1px 10px;
+            border-radius: 999px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .badge.free { background: var(--free-bg); color: var(--free-fg); }
+        .badge.busy { background: var(--busy-bg); color: var(--busy-fg); }
+        .badge.other { background: var(--other-bg); color: var(--other-fg); }
+
+        button, input, textarea { font: inherit; color: inherit; }
+
+        button {
+            border: 1px solid var(--border);
+            background: var(--surface);
+            border-radius: 6px;
+            padding: 6px 14px;
+            cursor: pointer;
+        }
+
+        button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+        button.danger { color: var(--danger); }
+        button.danger:hover:not(:disabled) { background: var(--danger-bg); }
+        button:disabled { opacity: .45; cursor: not-allowed; }
+        button.link { border: 0; background: none; padding: 0; color: var(--accent); font-size: inherit; }
+        button.link:hover { text-decoration: underline; }
+
+        input, textarea {
+            width: 100%;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 7px 10px;
+        }
+
+        input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+        input:invalid:not(:placeholder-shown) { border-color: var(--danger); }
+
+        textarea {
+            min-height: 120px;
+            resize: vertical;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+        }
+
+        fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 12px 16px;
+        }
+
+        .field { display: grid; gap: 4px; align-content: start; }
+        .field.wide { grid-column: 1 / -1; }
+        .field label { font-size: 13px; font-weight: 600; }
+        .field .hint { font-size: 12px; color: var(--muted); }
+
+        .form-actions { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+
+        .file-label { font-size: 13px; color: var(--accent); cursor: pointer; }
+        .file-label input { display: none; }
+
+        .auth { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .auth input { width: 220px; }
+
+        .msg {
+            margin: 12px 0 0;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        .msg.ok { background: var(--ok-bg); color: var(--ok-fg); }
+        .msg.error { background: var(--danger-bg); color: var(--danger); }
+        .notice { background: var(--other-bg); color: var(--other-fg); }
+
+        .stale { color: var(--danger); }
+
+        #log {
+            margin: 0;
+            max-height: 360px;
+            overflow: auto;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 10px 12px;
+            font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        [hidden] { display: none !important; }
+    </style>
 </head>
 
 <body>
-    <h1>Machine Status</h1>
-    <table border="1">
-        <tr>
-            <th>Machine</th>
-            <th>Status</th>
-        </tr>
-        {% for machine, status in statuses.items() %}
-        <tr>
-            <td>{{ machine }}</td>
-            <td>{{ status }}</td>
-        </tr>
-        {% endfor %}
-    </table>
+    <header>
+        <h1>Test machines</h1>
+        <div class="auth" id="auth">
+            <form id="unlock-form" class="auth" hidden>
+                <input type="password" id="token-input" placeholder="Admin token" autocomplete="off" aria-label="Admin token">
+                <button type="submit">Unlock</button>
+            </form>
+            <span id="unlocked" class="auth" hidden>
+                <span class="muted small">Admin mode</span>
+                <button type="button" id="lock-btn">Lock</button>
+            </span>
+        </div>
+    </header>
 
-    <h2>Running Pipelines</h2>
-    <table border="1">
-        <tr>
-            <th>Pipeline Run</th>
-            <th>Machine</th>
-        </tr>
-        {% for run, machine in wait_finish_runs %}
-        <tr>
-            <td>{{ run }}</td>
-            <td>{{ machine }}</td>
-        </tr>
-        {% endfor %}
-    </table>
+    <main>
+        <p id="api-disabled" class="msg notice" hidden>
+            Adding and removing machines is turned off because the controller has no <code>API_TOKEN</code> set.
+        </p>
+        <p id="token-msg" class="msg" role="alert" hidden></p>
 
-    <h2>Execution Log</h2>
-    <textarea id="log" rows="20" cols="150" readonly style="white-space: pre-wrap;">{{ log_contents }}</textarea>
+        <section class="card">
+            <div class="card-head">
+                <h2>Machines</h2>
+                <span id="updated" class="muted small"></span>
+            </div>
+            <div class="table-wrap">
+                <table id="machines">
+                    <thead>
+                        <tr>
+                            <th>Machine</th>
+                            <th>Status</th>
+                            <th class="col-extra">Used by</th>
+                            <th id="action-col" aria-label="Actions"></th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <p id="machines-msg" class="msg" role="status" hidden></p>
+        </section>
+
+        <section class="card" id="add-card">
+            <h2>Add machine</h2>
+            <p id="locked-hint" class="muted small" hidden>
+                <button type="button" class="link" id="locked-unlock">Enter the admin token</button> to add or remove machines.
+            </p>
+            <form id="add-form" autocomplete="off">
+                <fieldset id="add-fields">
+                    <div class="form-grid">
+                        <div class="field">
+                            <label for="f-name">Name</label>
+                            <input id="f-name" name="name" required placeholder="e.g. linux-arm64-1"
+                                pattern="[a-z0-9]([\-a-z0-9]{0,61}[a-z0-9])?" maxlength="63">
+                            <span class="hint">Lowercase letters, digits and <code>-</code>. Include <code>windows</code> for Windows hosts.</span>
+                        </div>
+                        <div class="field">
+                            <label for="f-host">Host</label>
+                            <input id="f-host" name="host" required placeholder="hostname or IP">
+                        </div>
+                        <div class="field">
+                            <label for="f-user">SSH user</label>
+                            <input id="f-user" name="username" required placeholder="e.g. crcqe">
+                        </div>
+                        <div class="field wide">
+                            <label for="f-key">SSH private key</label>
+                            <textarea id="f-key" name="private_key" required spellcheck="false"
+                                placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+                            <span class="hint">
+                                <label class="file-label">Load from file…<input type="file" id="f-keyfile"></label>
+                                · Saved as a cluster secret. The page doesn't keep it.
+                            </span>
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button type="submit" class="primary" id="add-btn">Add machine</button>
+                    </div>
+                </fieldset>
+            </form>
+            <p id="add-msg" class="msg" role="status" hidden></p>
+        </section>
+
+        <section class="card">
+            <h2>Running pipelines</h2>
+            <div class="table-wrap">
+                <table id="runs">
+                    <thead>
+                        <tr>
+                            <th>PipelineRun</th>
+                            <th>Machine</th>
+                            <th class="col-extra">Held until</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="card">
+            <h2>Log</h2>
+            <pre id="log">{{ log_contents }}</pre>
+        </section>
+    </main>
 
     <script>
-        var log = document.getElementById('log');
-        log.scrollTop = log.scrollHeight;
+        const API_ENABLED = {{ api_enabled | tojson }};
+        const LABEL_TASK = {{ label_task | tojson }};
+        const TOKEN_KEY = "machineApiToken";
+        let machines = {{ machines | tojson }};
+        let runs = {{ runs | tojson }};
+        let token = loadToken();
 
-        setInterval(function () {
-            fetch('/log')
-                .then(response => response.json())
-                .then(data => {
-                    log.value = data.log;
-                    log.scrollTop = log.scrollHeight;
-                });
-        }, 5000);
+        const $ = id => document.getElementById(id);
+
+        // storage can be blocked (private mode, policies); the page still works, the token just isn't remembered
+        function loadToken() {
+            try { return sessionStorage.getItem(TOKEN_KEY); } catch { return null; }
+        }
+
+        function saveToken(value) {
+            try {
+                if (value) sessionStorage.setItem(TOKEN_KEY, value);
+                else sessionStorage.removeItem(TOKEN_KEY);
+            } catch { }
+        }
+
+        // all server data is inserted with textContent, never innerHTML
+        function el(tag, props = {}, ...children) {
+            const node = Object.assign(document.createElement(tag), props);
+            node.append(...children);
+            return node;
+        }
+
+        function flash(target, text, kind) {
+            target.textContent = text;
+            target.className = `msg ${kind}`;
+            target.hidden = false;
+            clearTimeout(target._timer);
+            if (kind === "ok") target._timer = setTimeout(() => { target.hidden = true; }, 8000);
+        }
+
+        async function api(method, path, body) {
+            const headers = {};
+            if (token) headers.Authorization = `Bearer ${token}`;
+            if (body) headers["Content-Type"] = "application/json";
+            const res = await fetch(path, { method, headers, body: body && JSON.stringify(body) });
+            let data = null;
+            try { data = await res.json(); } catch { }
+            if (res.status === 401) {
+                lock();
+                flash($("token-msg"), "The admin token was rejected, unlock again.", "error");
+            }
+            if (!res.ok) throw new Error(data?.error || `${res.status} ${res.statusText}`);
+            return data;
+        }
+
+        function badge(status) {
+            const kind = status === "free" || status === "busy" ? status : "other";
+            return el("span", { className: `badge ${kind}`, textContent: status });
+        }
+
+        function renderMachines() {
+            const unlocked = API_ENABLED && !!token;
+            const names = Object.keys(machines).sort();
+            $("action-col").hidden = !unlocked;
+            const rows = names.map(name => {
+                const status = machines[name];
+                const users = runs.filter(r => r.machine === name).map(r => r.pipelinerun).join(", ");
+                const row = el("tr", {},
+                    el("td", { className: "name" }, name, users ? el("span", { className: "sub", textContent: users }) : ""),
+                    el("td", {}, badge(status)),
+                    el("td", { className: "muted col-extra", textContent: users || "—" }));
+                if (unlocked) {
+                    const busy = status === "busy";
+                    const btn = el("button", {
+                        type: "button",
+                        className: "danger",
+                        textContent: "Remove",
+                        disabled: busy,
+                        title: busy ? "A busy machine can't be removed. Wait until its run finishes." : `Remove ${name}`,
+                    });
+                    btn.addEventListener("click", () => removeMachine(name, btn));
+                    row.append(el("td", { className: "actions" }, btn));
+                }
+                return row;
+            });
+            if (!rows.length) {
+                rows.push(el("tr", {}, el("td", { className: "empty", colSpan: unlocked ? 4 : 3, textContent: "No machines registered yet." })));
+            }
+            $("machines").tBodies[0].replaceChildren(...rows);
+        }
+
+        function renderRuns() {
+            const rows = runs.map(r => {
+                const until = r.until === "task" ? `task ${LABEL_TASK || ""} finishes` : "run finishes";
+                return el("tr", {},
+                    el("td", { className: "name" }, r.pipelinerun, el("span", { className: "sub", textContent: `until ${until}` })),
+                    el("td", { className: "name", textContent: r.machine }),
+                    el("td", { className: "muted col-extra", textContent: until }));
+            });
+            if (!rows.length) {
+                rows.push(el("tr", {}, el("td", { className: "empty", colSpan: 3, textContent: "Nothing is running." })));
+            }
+            $("runs").tBodies[0].replaceChildren(...rows);
+        }
+
+        function renderAuth() {
+            const unlocked = API_ENABLED && !!token;
+            $("api-disabled").hidden = API_ENABLED;
+            $("auth").hidden = !API_ENABLED;
+            $("unlock-form").hidden = unlocked;
+            $("unlocked").hidden = !unlocked;
+            $("add-card").hidden = !API_ENABLED;
+            // locked: collapse the form to a dimmed placeholder
+            $("add-card").classList.toggle("locked", !unlocked);
+            $("add-form").hidden = !unlocked;
+            $("add-fields").disabled = !unlocked;
+            $("locked-hint").hidden = unlocked;
+            if (!unlocked) $("add-msg").hidden = true;
+            renderMachines();
+        }
+
+        function lock() {
+            token = null;
+            saveToken(null);
+            renderAuth();
+        }
+
+        $("unlock-form").addEventListener("submit", async ev => {
+            ev.preventDefault();
+            const candidate = $("token-input").value.trim();
+            if (!candidate) {
+                flash($("token-msg"), "Enter the admin token first.", "error");
+                $("token-input").focus();
+                return;
+            }
+            try {
+                const res = await fetch("/api/token-check", { headers: { Authorization: `Bearer ${candidate}` } });
+                if (res.status === 401) throw new Error("Wrong admin token.");
+                if (!res.ok) throw new Error(`Couldn't check the token (${res.status}).`);
+            } catch (e) {
+                flash($("token-msg"), e.message, "error");
+                return;
+            }
+            token = candidate;
+            saveToken(token);
+            $("token-input").value = "";
+            $("token-msg").hidden = true;
+            renderAuth();
+        });
+
+        $("lock-btn").addEventListener("click", lock);
+        $("locked-unlock").addEventListener("click", () => $("token-input").focus());
+
+        $("f-keyfile").addEventListener("change", async ev => {
+            const file = ev.target.files[0];
+            if (file) $("f-key").value = await file.text();
+            ev.target.value = "";
+        });
+
+        $("add-form").addEventListener("submit", async ev => {
+            ev.preventDefault();
+            const body = Object.fromEntries(new FormData(ev.target));
+            $("add-btn").disabled = true;
+            try {
+                await api("POST", "/api/machines", body);
+                ev.target.reset();
+                flash($("add-msg"), `Added ${body.name}. Pipelines can use it once they name it in their machine label.`, "ok");
+                await refresh();
+            } catch (e) {
+                flash($("add-msg"), e.message, "error");
+            } finally {
+                $("add-btn").disabled = false;
+            }
+        });
+
+        async function removeMachine(name, btn) {
+            const question = `Remove machine ${name}?\n\n` +
+                "Its secret is deleted if it was added here. Pipelines that still use it will stay pending until they are updated.";
+            if (!confirm(question)) return;
+            btn.disabled = true;
+            try {
+                await api("DELETE", `/api/machines/${encodeURIComponent(name)}`);
+                flash($("machines-msg"), `Removed ${name}.`, "ok");
+                await refresh();
+            } catch (e) {
+                flash($("machines-msg"), e.message, "error");
+                btn.disabled = false;
+            }
+        }
+
+        const json = res => res.ok ? res.json() : Promise.reject(new Error(res.status));
+
+        async function refresh() {
+            try {
+                [machines, runs] = await Promise.all([
+                    fetch("/api/machines").then(json),
+                    fetch("/api/runs").then(json),
+                ]);
+                renderMachines();
+                renderRuns();
+                $("updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
+                $("updated").classList.remove("stale");
+            } catch {
+                $("updated").textContent = "Can't reach the controller";
+                $("updated").classList.add("stale");
+            }
+        }
+
+        async function refreshLog() {
+            const log = $("log");
+            // keep the reader's scroll position unless they're following the tail
+            const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+            try {
+                const data = await fetch("/log").then(json);
+                log.textContent = data.log;
+                if (atBottom) log.scrollTop = log.scrollHeight;
+            } catch { }
+        }
+
+        renderAuth();
+        renderRuns();
+        $("updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
+        $("log").scrollTop = $("log").scrollHeight;
+        setInterval(refresh, 10000);
+        setInterval(refreshLog, 5000);
     </script>
 </body>
 
